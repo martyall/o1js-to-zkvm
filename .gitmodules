@@ -1,3 +1,4 @@
-[submodule "vendor/proof-systems"]
-	path = vendor/proof-systems
-	url = https://github.com/o1-labs/proof-systems.git
+[submodule "mina"]
+	path = mina
+	url = https://github.com/MinaProtocol/mina.git
+	branch = compatible
