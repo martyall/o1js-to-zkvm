@@ -34,8 +34,8 @@ use mina_poseidon::sponge::ScalarChallenge;
 use poly_commitment::ipa::endos;
 
 use crate::types::{
-    StepField, VerifiableProof, Verifier, VestaSrs, WrapField, WrapProof, WrapVerifierIndex,
-    STEP_IPA_ROUNDS, WRAP_IPA_ROUNDS,
+    StepField, VerifiableProof, Verifier, VestaSrs, WrapField, WrapProof, WrapSrs,
+    WrapVerifierIndex, STEP_IPA_ROUNDS, WRAP_IPA_ROUNDS,
 };
 use crate::wire::OcamlProof;
 
@@ -179,21 +179,45 @@ impl Verifier {
     /// has `FeatureFlag::is_enabled() = todo!()`, so a feature-gated linearization
     /// would panic.) Fails only if `step_domain_log2` exceeds the field's
     /// two-adicity (unreachable for valid step circuits).
+    ///
+    /// `wrap_srs` is the Pallas SRS the wrap `VerifierIndex` carries (attached
+    /// here since the serde form `#[serde(skip)]`s it); the stage-3 kimchi
+    /// `batch_verify` needs it for the public-input commitment + opening proof.
+    /// Pass it as an `Arc` so a single SRS can back many tags / proofs.
     pub fn new(
         wrap_vk: WrapVerifierIndex,
+        wrap_srs: alloc::sync::Arc<WrapSrs>,
         vesta_srs: VestaSrs,
         step_domain_log2: usize,
         step_num_chunks: usize,
     ) -> R<Verifier> {
+        let mut wrap_vk = wrap_vk;
+        wrap_vk.srs = wrap_srs;
+        // The serde form `#[serde(skip)]`s the wrap VK's `linearization`,
+        // `powers_of_alpha` AND `endo`; rebuild all three for the wrap
+        // (Pallas / Fq) circuit (features off, like the step circuit) so stage-3's
+        // `batch_verify` has the `Permutation` alphas registered and `ft_eval0`'s
+        // `Constants.endo_coefficient` is correct. The endo is the Vesta *base*
+        // endo (`endos::<Vesta>().0`) — matching kimchi's OCaml stub
+        // `pasta_fq_plonk_verifier_index` — NOT the deserialized default (zero),
+        // which would zero out the endomul-gate terms in the linearization. The
+        // lazy `OnceCell`s (`w`, `permutation_vanishing_polynomial_m`) recompute
+        // correctly for the nc=1 wrap circuit (zk_rows = 3, where the 3-factor and
+        // n-factor forms agree).
+        let (wrap_lin, wrap_alphas) =
+            expr_linearization::<WrapField>(Some(&FeatureFlags::default()), true);
+        wrap_vk.linearization = wrap_lin;
+        wrap_vk.powers_of_alpha = wrap_alphas;
+        wrap_vk.endo = endos::<Vesta>().0;
         let domain = Radix2EvaluationDomain::<StepField>::new(1usize << step_domain_log2)
             .ok_or_else(|| format!("no radix-2 domain of size 2^{step_domain_log2}"))?;
         let step_shifts: [StepField; 7] = *Shifts::new(&domain).shifts();
         // Step feature flags are all-off (no lookups / range-check / etc. in
         // mina's step circuits), so `Some(default)` yields a `SkipIf`-free
-        // linearization that kimchi's evaluator can run. `.0` drops the `Alphas`
-        // map for now; stage 1's `ft_eval0` permutation term needs it
-        // (`get_alphas(Permutation, …)`) and will re-add it when wired.
-        let (linearization, _alphas) =
+        // linearization that kimchi's evaluator can run. The `Alphas` map is
+        // kept (not dropped): stage 1's `ft_eval0` + `derive_plonk` permutation
+        // term need the instantiated `Permutation` alphas.
+        let (linearization, powers_of_alpha) =
             expr_linearization::<StepField>(Some(&FeatureFlags::default()), true);
         Ok(Verifier {
             wrap_vk,
@@ -205,6 +229,7 @@ impl Verifier {
             step_shifts,
             step_endo: endos::<Vesta>().1,
             linearization,
+            powers_of_alpha,
         })
     }
 }

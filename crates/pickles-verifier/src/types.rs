@@ -10,6 +10,7 @@
 
 use alloc::vec::Vec;
 
+use kimchi::alphas::Alphas;
 use kimchi::circuits::berkeley_columns::{BerkeleyChallengeTerm, Column};
 use kimchi::circuits::expr::{Linearization, PolishToken};
 use kimchi::proof::{PointEvaluations, ProverProof};
@@ -106,6 +107,11 @@ pub struct Verifier {
     /// step (`ft_eval0`) linearization polynomial, consumed by stage 1 via the
     /// kimchi `PolishToken` evaluator. PS `Verifier.linearizationPoly`.
     pub linearization: StepLinearization,
+    /// powers-of-alpha map produced alongside the linearization by
+    /// `expr_linearization`. Stage 1's `ft_eval0` and `derive_plonk` permutation
+    /// term need the instantiated `Permutation` alphas
+    /// (`get_alphas(Permutation, …)`), which the linearization alone drops.
+    pub powers_of_alpha: Alphas<StepField>,
 }
 
 /// The minimal data the verifier reads for one proof
