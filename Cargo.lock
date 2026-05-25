@@ -3175,7 +3175,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pickles-types"
+name = "pickles-verifier"
 version = "0.1.0"
 dependencies = [
  "ark-ec",

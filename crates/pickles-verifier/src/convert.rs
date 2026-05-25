@@ -23,7 +23,9 @@ use alloc::vec::Vec;
 
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use blake2::{Blake2s256, Digest};
+use kimchi::circuits::constraints::FeatureFlags;
 use kimchi::circuits::polynomials::permutation::Shifts;
+use kimchi::linearization::expr_linearization;
 use mina_curves::pasta::{Pallas, Vesta};
 use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use mina_poseidon::pasta::{fp_kimchi, fq_kimchi, FULL_ROUNDS};
@@ -169,11 +171,14 @@ impl Verifier {
     /// Build the per-tag verifier (PS `mkVerifier`). The step domain generator
     /// and permutation shifts are derived from `step_domain_log2`; `step_zk_rows`
     /// from `num_chunks` (`(16·nc + 5) / 7`); the step SRS length log2 is the
-    /// protocol-fixed `STEP_IPA_ROUNDS`. Fails only if `step_domain_log2` exceeds
-    /// the field's two-adicity (unreachable for valid step circuits).
-    ///
-    /// NOTE: the `linearization` field is added with the verify path (Step 3), so
-    /// this currently populates the eight non-linearization fields.
+    /// protocol-fixed `STEP_IPA_ROUNDS`; the linearization is the Tick polynomial
+    /// specialized to the step circuit's (all-off) feature flags, so it is
+    /// `SkipIf`-free and kimchi's `PolishToken::evaluate` consumes it directly.
+    /// (Same `ft_eval0` as `pickles-codegen`'s `None` linearization, which keeps
+    /// `SkipIf` tokens for a feature-aware interpreter — but kimchi's evaluator
+    /// has `FeatureFlag::is_enabled() = todo!()`, so a feature-gated linearization
+    /// would panic.) Fails only if `step_domain_log2` exceeds the field's
+    /// two-adicity (unreachable for valid step circuits).
     pub fn new(
         wrap_vk: WrapVerifierIndex,
         vesta_srs: VestaSrs,
@@ -183,6 +188,13 @@ impl Verifier {
         let domain = Radix2EvaluationDomain::<StepField>::new(1usize << step_domain_log2)
             .ok_or_else(|| format!("no radix-2 domain of size 2^{step_domain_log2}"))?;
         let step_shifts: [StepField; 7] = *Shifts::new(&domain).shifts();
+        // Step feature flags are all-off (no lookups / range-check / etc. in
+        // mina's step circuits), so `Some(default)` yields a `SkipIf`-free
+        // linearization that kimchi's evaluator can run. `.0` drops the `Alphas`
+        // map for now; stage 1's `ft_eval0` permutation term needs it
+        // (`get_alphas(Permutation, …)`) and will re-add it when wired.
+        let (linearization, _alphas) =
+            expr_linearization::<StepField>(Some(&FeatureFlags::default()), true);
         Ok(Verifier {
             wrap_vk,
             vesta_srs,
@@ -192,6 +204,7 @@ impl Verifier {
             step_generator: domain.group_gen,
             step_shifts,
             step_endo: endos::<Vesta>().1,
+            linearization,
         })
     }
 }

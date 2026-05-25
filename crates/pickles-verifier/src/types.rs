@@ -10,6 +10,8 @@
 
 use alloc::vec::Vec;
 
+use kimchi::circuits::berkeley_columns::{BerkeleyChallengeTerm, Column};
+use kimchi::circuits::expr::{Linearization, PolishToken};
 use kimchi::proof::{PointEvaluations, ProverProof};
 use kimchi::verifier_index::VerifierIndex;
 use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
@@ -32,6 +34,17 @@ pub type VestaSrs = <OpeningProof<Vesta, FULL_ROUNDS> as OpenProof<Vesta, FULL_R
 pub type WrapVerifierIndex = VerifierIndex<FULL_ROUNDS, Pallas, WrapSrs>;
 /// `proof.serde.json` — the wrap kimchi proof (over `Pallas`).
 pub type WrapProof = ProverProof<Pallas, OpeningProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>;
+
+/// The step (Tick) linearization polynomial in kimchi Polish/RPN form, built
+/// once via `expr_linearization::<StepField>(Some(&FeatureFlags::default()),
+/// true)` — specialized to the step circuit's all-off feature flags, so it is
+/// `SkipIf`-free and evaluable by kimchi's `PolishToken::evaluate` (whose
+/// `FeatureFlag::is_enabled()` is `todo!()`). Evaluated for `ft_eval0`. PS
+/// `LinearizationPoly StepField` (= `Pickles.Linearization.pallas`).
+/// `index_terms` is empty (`expr_linearization` folds everything into
+/// `constant_term`).
+pub type StepLinearization =
+    Linearization<Vec<PolishToken<StepField, Column, BerkeleyChallengeTerm>>, Column>;
 
 /// Number of step IPA rounds (`StepIPARounds` = step SRS log2 = 16).
 pub const STEP_IPA_ROUNDS: usize = 16;
@@ -73,11 +86,6 @@ pub struct ChunkedAllEvals {
 
 /// Per-tag verifier constants (`Pickles.Verify.Verifier` / `mkVerifier`). Built
 /// once from the wrap VK + SRSes; reused across every proof of a tag.
-///
-/// NOTE: the `ft_eval0` step linearization
-/// (`Linearization<Vec<PolishToken<StepField, …>>>`) is added with the verify
-/// path, where it is computed via kimchi's `expr_linearization` and consumed by
-/// `PolishToken::evaluate`.
 pub struct Verifier {
     /// wrap proof's kimchi verifier index (`Pallas`), SRS attached.
     pub wrap_vk: WrapVerifierIndex,
@@ -95,6 +103,9 @@ pub struct Verifier {
     pub step_shifts: [StepField; 7],
     /// step-field scalar endo coefficient.
     pub step_endo: StepField,
+    /// step (`ft_eval0`) linearization polynomial, consumed by stage 1 via the
+    /// kimchi `PolishToken` evaluator. PS `Verifier.linearizationPoly`.
+    pub linearization: StepLinearization,
 }
 
 /// The minimal data the verifier reads for one proof
