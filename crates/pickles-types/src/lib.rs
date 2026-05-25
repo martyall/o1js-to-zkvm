@@ -5,6 +5,9 @@
 //!
 //!   * [`wire`] (std) — the serde-deserializable form of the four
 //!     OCaml-serialized fixture files, plus parsing. Host-side only.
+//!   * [`convert`] (std) — host-side conversion of the parsed wire data
+//!     into the verifier types (`Verifier::new` + `OcamlProof::into_verifiable`);
+//!     port of the PureScript `Test.Pickles.Sideload.Loader` + `mkVerifier`.
 //!   * the verifier types (`Verifier`, `VerifiableProof`) + `verify`
 //!     (added next) are `no_std` + `alloc` so they run in the SP1 guest.
 //!
@@ -16,5 +19,10 @@
 
 extern crate alloc;
 
+pub mod types;
+
 #[cfg(feature = "std")]
 pub mod wire;
+
+#[cfg(feature = "std")]
+pub mod convert;

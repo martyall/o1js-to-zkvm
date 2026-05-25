@@ -20,29 +20,15 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use ark_ff::PrimeField;
-use kimchi::proof::{PointEvaluations, ProverProof};
-use kimchi::verifier_index::VerifierIndex;
-use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
-use mina_poseidon::pasta::FULL_ROUNDS;
+use kimchi::proof::PointEvaluations;
+use mina_curves::pasta::{Pallas, Vesta};
 use o1_utils::FieldHelpers;
-use poly_commitment::ipa::OpeningProof;
-use poly_commitment::OpenProof;
 use serde_json::Value;
 
-/// Step-proof field (Tick).
-pub type StepField = Fp;
-/// Wrap-proof field (Tock).
-pub type WrapField = Fq;
-
-/// The SRS the wrap `VerifierIndex` carries. It's `#[serde(skip)]`, so it is
-/// absent from `vk.serde.json` and attached at conversion time.
-pub type WrapSrs = <OpeningProof<Pallas, FULL_ROUNDS> as OpenProof<Pallas, FULL_ROUNDS>>::SRS;
-
-/// `vk.serde.json` — the wrap proof's kimchi verifier index (over `Pallas`).
-pub type WrapVerifierIndex = VerifierIndex<FULL_ROUNDS, Pallas, WrapSrs>;
-
-/// `proof.serde.json` — the wrap kimchi proof (over `Pallas`).
-pub type WrapProof = ProverProof<Pallas, OpeningProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>;
+use crate::types::{
+    BranchData, ChunkedAllEvals, PlonkMinimal, StepField, WrapField, WrapProof, WrapVerifierIndex,
+    STEP_IPA_ROUNDS, WRAP_IPA_ROUNDS,
+};
 
 /// Parse `vk.serde.json` into the kimchi verifier index (SRS still empty).
 pub fn parse_wrap_vk(json: &str) -> serde_json::Result<WrapVerifierIndex> {
@@ -82,45 +68,13 @@ pub fn parse_app_statement(json: &str) -> R<StepField> {
 // OcamlProof — the bespoke `public_input_skeleton.json` decode
 // ---------------------------------------------------------------------------
 
-/// Minimal Plonk deferred values: the raw 128-bit (pre-endo) challenges, as
-/// field elements. Port of the PS `PlonkMinimal`.
-#[derive(Debug, Clone)]
-pub struct PlonkMinimal {
-    pub alpha: StepField,
-    pub beta: StepField,
-    pub gamma: StepField,
-    pub zeta: StepField,
-}
-
-/// `branch_data` — the proofs-verified prefix mask (CONSTANT `to_bool_vec`
-/// encoding: N0=[F,F], N1=[F,T], N2=[T,T]) plus the step domain log2.
-#[derive(Debug, Clone)]
-pub struct BranchData {
-    pub domain_log2: StepField,
-    pub proofs_verified_mask: [bool; 2],
-}
-
-/// `prev_evals` — the previous (step) proof's evaluations, natively chunked
-/// (one `zeta`/`zeta_omega` per num_chunks). Port of the PS `ChunkedAllEvals`.
-#[derive(Debug, Clone)]
-pub struct ChunkedAllEvals {
-    pub ft_eval1: StepField,
-    /// public-input poly eval — a single chunk (flat `[zeta, omega]`).
-    pub public_evals: PointEvaluations<Vec<StepField>>,
-    pub z: PointEvaluations<Vec<StepField>>,
-    pub w: [PointEvaluations<Vec<StepField>>; 15],
-    pub coefficients: [PointEvaluations<Vec<StepField>>; 15],
-    pub s: [PointEvaluations<Vec<StepField>>; 6],
-    /// index selectors: generic, poseidon, complete_add, mul, emul, endomul_scalar.
-    pub index: [PointEvaluations<Vec<StepField>>; 6],
-}
-
 /// Typed parse of the OCaml `proof_state` + `prev_evals` skeleton. Mirrors the
-/// PS `OcamlProofWire`. The prev-proof arrays are length `mpv` (0/1/2).
+/// PS `OcamlProofWire`; the shared field/eval sub-types live in [`crate::types`].
+/// The prev-proof arrays are length `mpv` (0/1/2).
 #[derive(Debug, Clone)]
 pub struct OcamlProof {
     pub raw_plonk: PlonkMinimal,
-    pub raw_bulletproof_challenges: [StepField; 16],
+    pub raw_bulletproof_challenges: [StepField; STEP_IPA_ROUNDS],
     pub branch_data: BranchData,
     pub sponge_digest_before_evaluations: StepField,
     /// the proof's own wrap challenge-polynomial commitment (Vesta, Fq coords).
@@ -131,9 +85,9 @@ pub struct OcamlProof {
     /// `messages_for_next_step_proof.challenge_polynomial_commitments` (Pallas).
     pub prev_step_sgs: Vec<Pallas>,
     /// `messages_for_next_step_proof.old_bulletproof_challenges` (16-round step).
-    pub prev_step_chals_raw: Vec<[StepField; 16]>,
+    pub prev_step_chals_raw: Vec<[StepField; STEP_IPA_ROUNDS]>,
     /// `messages_for_next_wrap_proof.old_bulletproof_challenges` (15-round wrap).
-    pub prev_wrap_chals_raw: Vec<[WrapField; 15]>,
+    pub prev_wrap_chals_raw: Vec<[WrapField; WRAP_IPA_ROUNDS]>,
 }
 
 fn field<'a>(v: &'a Value, k: &str) -> R<&'a Value> {
@@ -322,8 +276,10 @@ impl OcamlProof {
             zeta: challenge(field(plonk, "zeta")?)?,
         };
 
-        let raw_bulletproof_challenges =
-            bulletproof_vec::<StepField, 16>(field(deferred, "bulletproof_challenges")?)?;
+        let raw_bulletproof_challenges = bulletproof_vec::<StepField, STEP_IPA_ROUNDS>(field(
+            deferred,
+            "bulletproof_challenges",
+        )?)?;
 
         let branch_data_j = field(deferred, "branch_data")?;
         let step_domain_log2 = ocaml_byte(field(branch_data_j, "domain_log2")?)?;
@@ -338,7 +294,7 @@ impl OcamlProof {
         )?)?)?;
 
         let msg_wrap = field(proof_state, "messages_for_next_wrap_proof")?;
-        let challenge_polynomial_commitment = affine::<Vesta, Fq>(
+        let challenge_polynomial_commitment = affine::<Vesta, WrapField>(
             field(msg_wrap, "challenge_polynomial_commitment")?,
             Vesta::new_unchecked,
         )?;
@@ -346,15 +302,15 @@ impl OcamlProof {
         let msg_step = field(statement, "messages_for_next_step_proof")?;
         let prev_step_sgs = as_vec(field(msg_step, "challenge_polynomial_commitments")?)?
             .iter()
-            .map(|p| affine::<Pallas, Fp>(p, Pallas::new_unchecked))
+            .map(|p| affine::<Pallas, StepField>(p, Pallas::new_unchecked))
             .collect::<R<Vec<_>>>()?;
         let prev_step_chals_raw = as_vec(field(msg_step, "old_bulletproof_challenges")?)?
             .iter()
-            .map(bulletproof_vec::<StepField, 16>)
+            .map(bulletproof_vec::<StepField, STEP_IPA_ROUNDS>)
             .collect::<R<Vec<_>>>()?;
         let prev_wrap_chals_raw = as_vec(field(msg_wrap, "old_bulletproof_challenges")?)?
             .iter()
-            .map(bulletproof_vec::<WrapField, 15>)
+            .map(bulletproof_vec::<WrapField, WRAP_IPA_ROUNDS>)
             .collect::<R<Vec<_>>>()?;
 
         let prev_evals = parse_all_evals(field(&root, "prev_evals")?)?;

@@ -5,10 +5,19 @@ edition = "2021"
 
 [features]
 default = ["std"]
-# `std` gates the OCaml-serialized fixture wire types + parsing (serde_json,
-# std::fs, hex). The core verifier types + `verify` are `no_std` + `alloc`
-# (SP1-guest-ready); the guest builds with `--no-default-features`.
-std = ["dep:serde_json", "dep:hex", "ark-ff/std"]
+# `std` gates the OCaml-serialized fixture wire types + parsing + the
+# host-side conversion (serde_json, hex, ark-poly domain/shift derivation,
+# blake2s dummy-challenge derivation). The core verifier types + `verify`
+# are `no_std` + `alloc` (SP1-guest-ready); the guest builds with
+# `--no-default-features`.
+std = [
+    "dep:serde_json",
+    "dep:hex",
+    "dep:o1-utils",
+    "dep:ark-poly",
+    "dep:blake2",
+    "ark-ff/std",
+]
 
 [dependencies]
 kimchi = { workspace = true }
@@ -16,12 +25,14 @@ poly-commitment = { workspace = true }
 mina-curves = { workspace = true }
 mina-poseidon = { workspace = true }
 groupmap = { workspace = true }
-o1-utils = { path = "../../mina/src/lib/crypto/proof-systems/utils", default-features = false }
+o1-utils = { path = "../../mina/src/lib/crypto/proof-systems/utils", default-features = false, optional = true }
 serde = { workspace = true }
 ark-ff = { workspace = true }
 ark-ec = { workspace = true }
 ark-serialize = { workspace = true }
 
-# std-only (fixture wire/parsing)
+# std-only (fixture wire/parsing + host-side conversion)
 serde_json = { version = "1", optional = true }
 hex = { version = "0.4", optional = true }
+ark-poly = { version = "0.5", default-features = false, optional = true }
+blake2 = { version = "0.10", default-features = false, optional = true }
