@@ -1,4 +1,4 @@
-.PHONY: help install deps build-ts build-rust ts-unit-tests rust-unit-tests ts-e2e-tests rust-e2e-tests rust-e2e-tests-profile prove-cpu prove-cuda lint-check lint
+.PHONY: help install deps build-ts build-rust ts-unit-tests rust-unit-tests ts-e2e-tests rust-e2e-tests rust-e2e-tests-profile prove-cpu prove-cuda lint-check lint dump-simplechain-fixtures clear-simplechain-fixtures dump-treeproofreturn-fixtures clear-treeproofreturn-fixtures dump-nrr-fixtures clear-nrr-fixtures
 
 CIRCUIT_FIXTURE := $(CURDIR)/fixtures/circuit.json
 
@@ -6,6 +6,18 @@ CIRCUIT_FIXTURE := $(CURDIR)/fixtures/circuit.json
 # scripts run with a different cwd, so a relative CIRCUIT_JSON fails at build time.
 CIRCUIT_JSON ?= $(CIRCUIT_FIXTURE)
 export CIRCUIT_JSON := $(abspath $(CIRCUIT_JSON))
+
+# Output directories for the pickles fixtures (overridable). One per recursion
+# pattern: NRR (mpv=0), Simple_chain (mpv=1), Tree_proof_return (mpv=2).
+NRR_FIXTURE_DIR ?= $(CURDIR)/fixtures/nrr
+SIMPLECHAIN_FIXTURE_DIR ?= $(CURDIR)/fixtures/simplechain
+TREEPROOFRETURN_FIXTURE_DIR ?= $(CURDIR)/fixtures/treeproofreturn
+# Flake ref for the mina submodule dev shell. We address it as an explicit
+# git+file URL with `?submodules=1` so nix pulls mina's nested submodules
+# (proof-systems, kimchi-stubs-vendors). The plain `mina#default` relative
+# form does NOT include submodules. The `#` is escaped so make doesn't treat
+# the rest of the line as a comment.
+MINA_DEVSHELL := git+file://$(CURDIR)/mina?submodules=1\#default
 
 .DEFAULT_GOAL := help
 
@@ -61,3 +73,24 @@ lint: ## Run all linters and formatters with auto-fix
 	cargo fmt -p o1-verifier -p o1-verifier-host -p o1-verifier-lib
 	cargo build --release -p o1-verifier-host
 	cargo clippy --all-targets --features std --fix --allow-dirty --allow-staged -- -D warnings
+
+dump-simplechain-fixtures: ## Dump Simple_chain wrap-proof fixtures (b0,b1,b2) to $(SIMPLECHAIN_FIXTURE_DIR)
+	mkdir -p "$(SIMPLECHAIN_FIXTURE_DIR)/wrap0" "$(SIMPLECHAIN_FIXTURE_DIR)/wrap1" "$(SIMPLECHAIN_FIXTURE_DIR)/wrap2"
+	nix develop $(MINA_DEVSHELL) -c bash -c 'cd mina && KIMCHI_DETERMINISTIC_SEED=42 dune exec src/lib/crypto/pickles/dump_simple_chain_fixtures/dump_simple_chain_fixtures.exe -- "$(SIMPLECHAIN_FIXTURE_DIR)"'
+
+clear-simplechain-fixtures: ## Remove the Simple_chain fixture directory ($(SIMPLECHAIN_FIXTURE_DIR))
+	rm -rf "$(SIMPLECHAIN_FIXTURE_DIR)"
+
+dump-treeproofreturn-fixtures: ## Dump Tree_proof_return wrap-proof fixtures (mpv=2, b0,b1,b2) to $(TREEPROOFRETURN_FIXTURE_DIR)
+	mkdir -p "$(TREEPROOFRETURN_FIXTURE_DIR)/wrap0" "$(TREEPROOFRETURN_FIXTURE_DIR)/wrap1" "$(TREEPROOFRETURN_FIXTURE_DIR)/wrap2"
+	nix develop $(MINA_DEVSHELL) -c bash -c 'cd mina && KIMCHI_DETERMINISTIC_SEED=42 dune exec src/lib/crypto/pickles/dump_tree_proof_return_fixtures/dump_tree_proof_return_fixtures.exe -- "$(TREEPROOFRETURN_FIXTURE_DIR)"'
+
+clear-treeproofreturn-fixtures: ## Remove the Tree_proof_return fixture directory ($(TREEPROOFRETURN_FIXTURE_DIR))
+	rm -rf "$(TREEPROOFRETURN_FIXTURE_DIR)"
+
+dump-nrr-fixtures: ## Dump No_recursion_return wrap-proof fixture (mpv=0) to $(NRR_FIXTURE_DIR)
+	mkdir -p "$(NRR_FIXTURE_DIR)"
+	nix develop $(MINA_DEVSHELL) -c bash -c 'cd mina && KIMCHI_DETERMINISTIC_SEED=42 dune exec src/lib/crypto/pickles/dump_nrr_fixtures/dump_nrr_fixtures.exe -- "$(NRR_FIXTURE_DIR)"'
+
+clear-nrr-fixtures: ## Remove the No_recursion_return fixture directory ($(NRR_FIXTURE_DIR))
+	rm -rf "$(NRR_FIXTURE_DIR)"
