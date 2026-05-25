@@ -1,0 +1,27 @@
+[package]
+name = "pickles-types"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+# `std` gates the OCaml-serialized fixture wire types + parsing (serde_json,
+# std::fs, hex). The core verifier types + `verify` are `no_std` + `alloc`
+# (SP1-guest-ready); the guest builds with `--no-default-features`.
+std = ["dep:serde_json", "dep:hex", "ark-ff/std"]
+
+[dependencies]
+kimchi = { workspace = true }
+poly-commitment = { workspace = true }
+mina-curves = { workspace = true }
+mina-poseidon = { workspace = true }
+groupmap = { workspace = true }
+o1-utils = { path = "../../mina/src/lib/crypto/proof-systems/utils", default-features = false }
+serde = { workspace = true }
+ark-ff = { workspace = true }
+ark-ec = { workspace = true }
+ark-serialize = { workspace = true }
+
+# std-only (fixture wire/parsing)
+serde_json = { version = "1", optional = true }
+hex = { version = "0.4", optional = true }

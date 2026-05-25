@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/o1-verifier", "crates/o1-verifier-host", "crates/o1-verifier-lib"]
+members = ["crates/o1-verifier", "crates/o1-verifier-host", "crates/o1-verifier-lib", "crates/pickles-types"]
 exclude = ["mina/src/lib/crypto/proof-systems"]
 
 [workspace.dependencies]

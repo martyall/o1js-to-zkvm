@@ -158,6 +158,7 @@ dependencies = [
  "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
+ "rayon",
  "zeroize",
 ]
 
@@ -198,6 +199,7 @@ dependencies = [
  "num-bigint 0.4.6",
  "num-traits",
  "paste",
+ "rayon",
  "zeroize",
 ]
 
@@ -260,6 +262,7 @@ dependencies = [
  "educe",
  "fnv",
  "hashbrown 0.15.5",
+ "rayon",
 ]
 
 [[package]]
@@ -284,6 +287,7 @@ dependencies = [
  "arrayvec",
  "digest",
  "num-bigint 0.4.6",
+ "rayon",
 ]
 
 [[package]]
@@ -315,6 +319,7 @@ checksum = "246a225cc6131e9ee4f24619af0f19d67761fff15d7ccc22e42b80846e69449a"
 dependencies = [
  "num-traits",
  "rand 0.8.5",
+ "rayon",
 ]
 
 [[package]]
@@ -1095,6 +1100,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "powerfmt",
+ "serde_core",
 ]
 
 [[package]]
@@ -1202,6 +1208,12 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
 ]
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "dynasm"
@@ -1682,7 +1694,7 @@ dependencies = [
 
 [[package]]
 name = "groupmap"
-version = "0.6.0"
+version = "0.4.1"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -1756,7 +1768,6 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
- "serde",
 ]
 
 [[package]]
@@ -2079,6 +2090,7 @@ checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
 dependencies = [
  "autocfg",
  "hashbrown 0.12.3",
+ "serde",
 ]
 
 [[package]]
@@ -2108,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "internal-tracing"
-version = "0.6.0"
+version = "0.4.1"
 
 [[package]]
 name = "ipnet"
@@ -2226,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi"
-version = "0.6.0"
+version = "0.4.1"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -2243,8 +2255,12 @@ dependencies = [
  "num-bigint 0.4.6",
  "num-integer",
  "o1-utils",
+ "once_cell",
  "poly-commitment",
+ "rand 0.8.5",
  "rand_core 0.6.4",
+ "rayon",
+ "rmp-serde",
  "serde",
  "serde_with",
  "strum",
@@ -2258,7 +2274,7 @@ version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
- "spin 0.9.8",
+ "spin",
 ]
 
 [[package]]
@@ -2409,7 +2425,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mina-curves"
-version = "0.6.0"
+version = "0.4.1"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -2421,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "mina-poseidon"
-version = "0.6.0"
+version = "0.4.1"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -2429,7 +2445,9 @@ dependencies = [
  "ark-serialize 0.5.0",
  "mina-curves",
  "o1-utils",
+ "once_cell",
  "rand 0.8.5",
+ "rayon",
  "serde",
  "serde_with",
 ]
@@ -2650,8 +2668,9 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "o1-utils"
-version = "0.6.0"
+version = "0.4.1"
 dependencies = [
+ "ark-ec",
  "ark-ff 0.5.0",
  "ark-poly",
  "ark-serialize 0.5.0",
@@ -2660,11 +2679,14 @@ dependencies = [
  "num-bigint 0.4.6",
  "num-integer",
  "rand 0.8.5",
+ "rand_core 0.6.4",
+ "rayon",
+ "rmp-serde",
  "rustversion",
  "serde",
+ "serde_json",
  "serde_with",
  "sha2",
- "spin 0.10.0",
  "thiserror 2.0.18",
 ]
 
@@ -2727,9 +2749,9 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.21.4"
+version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
 name = "once_cell_polyfill"
@@ -3153,6 +3175,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pickles-types"
+version = "0.1.0"
+dependencies = [
+ "ark-ec",
+ "ark-ff 0.5.0",
+ "ark-serialize 0.5.0",
+ "groupmap",
+ "hex",
+ "kimchi",
+ "mina-curves",
+ "mina-poseidon",
+ "o1-utils",
+ "poly-commitment",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3190,7 +3230,7 @@ dependencies = [
 
 [[package]]
 name = "poly-commitment"
-version = "0.6.0"
+version = "0.4.1"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -3198,7 +3238,6 @@ dependencies = [
  "ark-serialize 0.5.0",
  "blake2",
  "groupmap",
- "hashbrown 0.15.5",
  "hex",
  "itertools 0.12.1",
  "mina-curves",
@@ -3207,6 +3246,8 @@ dependencies = [
  "o1-utils",
  "rand 0.8.5",
  "rand_core 0.6.4",
+ "rayon",
+ "rmp-serde",
  "serde",
  "serde_with",
  "thiserror 2.0.18",
@@ -3567,6 +3608,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f354300ae66f76f1c85c5f84693f0ce81d747e2c3f21a45fef496d89c960bf7d"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7186006dcb21920990093f30e3dea63b7d6e977bf1256be20c3563a5db070da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3840,6 +3901,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3949,6 +4034,10 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "hex",
+ "indexmap 1.9.3",
+ "indexmap 2.13.1",
+ "schemars 0.9.0",
+ "schemars 1.2.1",
  "serde_core",
  "serde_json",
  "serde_with_macros",
@@ -5072,12 +5161,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
-name = "spin"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
-
-[[package]]
 name = "spki"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5262,7 +5345,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
