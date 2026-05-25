@@ -163,6 +163,7 @@ mod tests {
         let verifier = Verifier::new(seed_vk, tiny_wrap_srs(), vesta_srs, 16, 1).expect("verifier");
 
         for dir in [
+            "mainnet-blockchain-snark",
             "nrr",
             "simplechain/wrap0",
             "simplechain/wrap1",
@@ -205,6 +206,7 @@ mod tests {
         let verifier = Verifier::new(seed_vk, tiny_wrap_srs(), vesta_srs, 16, 1).expect("verifier");
 
         for dir in [
+            "mainnet-blockchain-snark",
             "nrr",
             "simplechain/wrap0",
             "simplechain/wrap1",
@@ -246,6 +248,7 @@ mod tests {
         let wrap_srs = Arc::new(WrapSrs::create(seed_vk.max_poly_size));
 
         for dir in [
+            "mainnet-blockchain-snark",
             "nrr",
             "simplechain/wrap0",
             "simplechain/wrap1",
