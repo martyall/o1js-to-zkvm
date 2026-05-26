@@ -16,12 +16,9 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use blake2::{Blake2s256, Digest};
-use kimchi::circuits::constraints::FeatureFlags;
-use kimchi::linearization::expr_linearization;
 use mina_curves::pasta::{Pallas, Vesta};
 use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use mina_poseidon::pasta::{fp_kimchi, fq_kimchi, FULL_ROUNDS};
@@ -30,8 +27,8 @@ use mina_poseidon::sponge::ScalarChallenge;
 use poly_commitment::ipa::endos;
 
 use crate::types::{
-    StepField, VerifiableProof, Verifier, VestaSrs, WrapField, WrapProof, WrapSrs,
-    WrapVerifierIndex, STEP_IPA_ROUNDS, WRAP_IPA_ROUNDS,
+    StepField, VerifiableProof, WrapField, WrapProof, WrapVerifierIndex, STEP_IPA_ROUNDS,
+    WRAP_IPA_ROUNDS,
 };
 use crate::wire::OcamlProof;
 
@@ -157,56 +154,6 @@ fn hash_messages_for_next_wrap(
 // ---------------------------------------------------------------------------
 // Public conversion entry points.
 // ---------------------------------------------------------------------------
-
-impl Verifier {
-    /// Build the per-tag verifier. `step_zk_rows` comes from `num_chunks`
-    /// (`(16·nc + 5) / 7`); the step SRS length log2 is the protocol-fixed
-    /// [`STEP_IPA_ROUNDS`]; the linearization is the Tick polynomial
-    /// specialized to the step circuit's (all-off) feature flags, so it is
-    /// `SkipIf`-free and kimchi's `PolishToken::evaluate` consumes it
-    /// directly. The wrap VK is reconstructed: its serde form
-    /// `#[serde(skip)]`s `srs`, `linearization`, `powers_of_alpha`, AND
-    /// `endo`. The endo is the Vesta *base* endo (`endos::<Vesta>().0`,
-    /// matching kimchi's `pasta_fq_plonk_verifier_index` OCaml stub), NOT the
-    /// deserialized default (zero), which would zero out the endomul-gate
-    /// terms in `ft_eval0`. The lazy `OnceCell`s (`w`,
-    /// `permutation_vanishing_polynomial_m`) recompute correctly for the nc=1
-    /// wrap circuit (zk_rows = 3, where the 3-factor and n-factor
-    /// perm-vanishing forms agree).
-    ///
-    /// `wrap_srs` and `vesta_srs` are passed as `Arc`s so one SRS per curve
-    /// can back many tags / proofs.
-    pub fn new(
-        wrap_vk: WrapVerifierIndex,
-        wrap_srs: Arc<WrapSrs>,
-        vesta_srs: Arc<VestaSrs>,
-        step_num_chunks: usize,
-    ) -> Verifier {
-        let mut wrap_vk = wrap_vk;
-        wrap_vk.srs = wrap_srs;
-        let (wrap_lin, wrap_alphas) =
-            expr_linearization::<WrapField>(Some(&FeatureFlags::default()), true);
-        wrap_vk.linearization = wrap_lin;
-        wrap_vk.powers_of_alpha = wrap_alphas;
-        wrap_vk.endo = endos::<Vesta>().0;
-        // Step feature flags are all-off, so `Some(default)` yields a
-        // `SkipIf`-free linearization (kimchi's evaluator panics on `SkipIf`).
-        // The `Alphas` map is kept (not dropped): stage 1's `ft_eval0` +
-        // `derive_plonk` permutation term need the instantiated `Permutation`
-        // alphas.
-        let (linearization, powers_of_alpha) =
-            expr_linearization::<StepField>(Some(&FeatureFlags::default()), true);
-        Verifier {
-            wrap_vk,
-            vesta_srs,
-            step_zk_rows: (16 * step_num_chunks + 5) / 7,
-            step_srs_length_log2: STEP_IPA_ROUNDS,
-            step_endo: endos::<Vesta>().1,
-            linearization,
-            powers_of_alpha,
-        }
-    }
-}
 
 impl OcamlProof {
     /// Consume the parsed wire skeleton into a canonical [`VerifiableProof`]:

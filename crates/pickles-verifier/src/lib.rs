@@ -20,6 +20,7 @@
 extern crate alloc;
 
 pub mod deferred;
+pub mod serialize;
 pub mod types;
 
 #[cfg(feature = "std")]
