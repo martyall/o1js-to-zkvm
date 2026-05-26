@@ -1,9 +1,17 @@
 //! Blob format for shipping a [`Verifier`] into the SP1 guest.
 //!
-//! Mostly zero-parse: the heavy data (SRS generators + the wrap blinder `h`)
-//! is laid out as bit-identical pod arrays the guest reinterprets via
-//! `bytemuck`; the lighter `wrap_vk` rides in via kimchi's own serde over
-//! `postcard`.
+//! Mostly zero-parse: the heavy data (SRS generators, the wrap blinder `h`,
+//! and the wrap SRS's **Lagrange basis** at the wrap proof's domain) is laid
+//! out as bit-identical pod arrays the guest reinterprets via `bytemuck`; the
+//! lighter `wrap_vk` rides in via kimchi's own serde over `postcard`.
+//!
+//! Baking the Lagrange basis matters. The wrap proof's public-input
+//! commitment in `batch_verify_with_rng` calls `srs.get_lagrange_basis(domain)`;
+//! without a pre-seeded cache, kimchi runs the FFT-on-curve generator on the
+//! full SRS — historically ~91% of the guest's cycles. Encode-side we compute
+//! it once via [`poly_commitment::SRS::get_lagrange_basis_from_domain_size`];
+//! decode-side we seed the cache via the public `SRS::lagrange_bases()`
+//! accessor (the *field* is private, the accessor is not).
 //!
 //! Blob layout (all little-endian, sections 8-byte aligned at start):
 //!
@@ -15,6 +23,9 @@
 //! ...     wrap_g_len: u64                8
 //! +8      PodPallas * wrap_g_len         72 * wrap_g_len      -- wrap SRS .g
 //! ...     wrap_h: PodPallas              72                   -- wrap SRS .h
+//! ...     wrap_basis_len: u64            8
+//! +8      PodPallas * wrap_basis_len     72 * wrap_basis_len  -- wrap Lagrange basis
+//! ...                                                            (one Pallas per single-chunk PolyComm)
 //! ...     step_num_chunks: u64           8
 //! ...     wrap_vk_len: u64               8
 //! +8      bytes * wrap_vk_len            wrap_vk_len          -- postcard(wrap_vk); srs is #[serde(skip)]
@@ -26,12 +37,10 @@
 //! the Pod structs being bit-identical to arkworks's affine layout for the
 //! pinned versions; the [`tests`] module pins it.
 //!
-//! TODO: the wrap SRS's Lagrange basis is **not** precomputed in the blob
-//! (kimchi's `lagrange_bases` field is private; populating it would need an
-//! upstream API). The guest pays an on-the-fly recomputation in
-//! `batch_verify_with_rng`'s public-input commitment — significant SP1 cycles
-//! that an upstream `SRS::add_lagrange_basis(domain_size, basis)` (or similar)
-//! would let us amortize at build time.
+//! Single-chunk Lagrange basis: we assert each `PolyComm` has `chunks.len()
+//! == 1` at encode time. This holds whenever `wrap_srs.g.len() >=
+//! wrap_vk.domain.size()`, which is always the case for our circuits (wrap
+//! SRS = 2¹⁵; wrap domain ≤ 2¹⁵).
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -39,6 +48,10 @@ use core::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
 use mina_curves::pasta::{Pallas, Vesta};
+use poly_commitment::commitment::PolyComm;
+// Bring the `poly_commitment::SRS` trait into scope so we can call
+// `get_lagrange_basis_from_domain_size` on the IPA SRS at encode time.
+use poly_commitment::SRS as _;
 
 use crate::types::{Verifier, VestaSrs, WrapSrs, WrapVerifierIndex};
 
@@ -121,7 +134,9 @@ fn read_u64_le(bytes: &[u8]) -> (u64, &[u8]) {
 fn read_vesta_section(bytes: &[u8]) -> (&[Vesta], &[u8]) {
     let (len, rest) = read_u64_le(bytes);
     let len = len as usize;
-    let byte_len = len.checked_mul(size_of::<PodVesta>()).expect("section overflow");
+    let byte_len = len
+        .checked_mul(size_of::<PodVesta>())
+        .expect("section overflow");
     assert!(rest.len() >= byte_len, "blob truncated mid vesta section");
     let (section, tail) = rest.split_at(byte_len);
     let pods: &[PodVesta] = bytemuck::cast_slice(section);
@@ -135,7 +150,9 @@ fn read_vesta_section(bytes: &[u8]) -> (&[Vesta], &[u8]) {
 fn read_pallas_section(bytes: &[u8]) -> (&[Pallas], &[u8]) {
     let (len, rest) = read_u64_le(bytes);
     let len = len as usize;
-    let byte_len = len.checked_mul(size_of::<PodPallas>()).expect("section overflow");
+    let byte_len = len
+        .checked_mul(size_of::<PodPallas>())
+        .expect("section overflow");
     assert!(rest.len() >= byte_len, "blob truncated mid pallas section");
     let (section, tail) = rest.split_at(byte_len);
     let pods: &[PodPallas] = bytemuck::cast_slice(section);
@@ -164,11 +181,42 @@ fn read_bytes_section(bytes: &[u8]) -> (&[u8], &[u8]) {
 }
 
 // ---------------------------------------------------------------------------
+// Lagrange basis seeding.
+// ---------------------------------------------------------------------------
+
+/// Seed the wrap SRS's Lagrange-basis cache at `domain_size`. Interior
+/// mutability via the public `SRS::lagrange_bases()` accessor, so this works
+/// through a shared `&WrapSrs` (i.e. through an `Arc<WrapSrs>` deref).
+///
+/// std and no_std take different cache shapes: in std, poly-commitment's
+/// `HashMapCache` (`Arc<Mutex<HashMap<K, Arc<V>>>>`) with `set_once(K, V)`;
+/// in no_std, a plain `Rc<RefCell<HashMap<K, Rc<V>>>>` with
+/// `borrow_mut().insert(K, Rc::new(V))`. We always insert (overwriting any
+/// existing entry) — fine because the basis is deterministic in the SRS and
+/// domain.
+fn seed_wrap_lagrange_basis(srs: &WrapSrs, domain_size: usize, basis: Vec<PolyComm<Pallas>>) {
+    #[cfg(feature = "std")]
+    {
+        srs.lagrange_bases().set_once(domain_size, basis);
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        srs.lagrange_bases()
+            .borrow_mut()
+            .insert(domain_size, alloc::rc::Rc::new(basis));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public encode / decode.
 // ---------------------------------------------------------------------------
 
-/// Encode a [`Verifier`]'s shippable form: pod-cast SRS data + postcard'd
-/// wrap VK.
+/// Encode a [`Verifier`]'s shippable form: pod-cast SRS data + pre-computed
+/// wrap Lagrange basis + postcard'd wrap VK.
+///
+/// Internally invokes `wrap_srs.get_lagrange_basis_from_domain_size(domain_size)`
+/// with `domain_size = wrap_vk.domain.size()`. Each `PolyComm` in the basis is
+/// asserted single-chunk (it is, for any of our wrap circuits).
 pub fn encode_verifier_blob(
     vesta_srs: &VestaSrs,
     wrap_srs: &WrapSrs,
@@ -179,6 +227,25 @@ pub fn encode_verifier_blob(
     write_vesta_section(&mut out, &vesta_srs.g);
     write_pallas_section(&mut out, &wrap_srs.g);
     write_one_pallas(&mut out, &wrap_srs.h);
+
+    // Pre-compute the wrap SRS's Lagrange basis at the wrap proof's domain
+    // and inline it. The Deref'd `Vec<PolyComm<Pallas>>` view lives only as
+    // long as the temporary; copy out each single-chunk Pallas point.
+    let domain_size = wrap_vk.domain.size as usize;
+    let basis_ref = wrap_srs.get_lagrange_basis_from_domain_size(domain_size);
+    let basis: &[PolyComm<Pallas>] = &basis_ref;
+    let mut basis_points: Vec<Pallas> = Vec::with_capacity(basis.len());
+    for (i, poly) in basis.iter().enumerate() {
+        assert_eq!(
+            poly.chunks.len(),
+            1,
+            "wrap lagrange basis poly {i}: expected single-chunk PolyComm, got {} chunks",
+            poly.chunks.len()
+        );
+        basis_points.push(poly.chunks[0]);
+    }
+    write_pallas_section(&mut out, &basis_points);
+
     write_u64_le(&mut out, step_num_chunks as u64);
     let vk_bytes = postcard::to_allocvec(wrap_vk).expect("postcard(wrap_vk)");
     write_bytes_section(&mut out, &vk_bytes);
@@ -186,7 +253,9 @@ pub fn encode_verifier_blob(
 }
 
 /// Decode the blob produced by [`encode_verifier_blob`] into a fully-assembled
-/// [`Verifier`], suitable to hand straight to [`crate::verify`].
+/// [`Verifier`], suitable to hand straight to [`crate::verify`]. The wrap
+/// Lagrange basis is decoded and seeded into the wrap SRS's cache so kimchi
+/// will hit the cache and skip the FFT-on-curve generator.
 ///
 /// `bytes` must be 8-byte aligned (the guest gets this from a
 /// `#[repr(C, align(8))]` wrapper around `include_bytes!`). `no_std`.
@@ -194,6 +263,7 @@ pub fn decode_verifier_blob(bytes: &[u8]) -> Verifier {
     let (vesta_g, rest) = read_vesta_section(bytes);
     let (wrap_g, rest) = read_pallas_section(rest);
     let (wrap_h, rest) = read_one_pallas(rest);
+    let (wrap_basis_pts, rest) = read_pallas_section(rest);
     let (step_num_chunks, rest) = read_u64_le(rest);
     let (vk_bytes, _tail) = read_bytes_section(rest);
 
@@ -202,18 +272,33 @@ pub fn decode_verifier_blob(bytes: &[u8]) -> Verifier {
     let mut vesta_srs = VestaSrs::default();
     vesta_srs.g = vesta_g.to_vec();
 
-    // Wrap (Pallas) SRS: `g` + `h`. The Lagrange basis is left empty;
-    // kimchi recomputes it on demand inside `batch_verify_with_rng`'s
-    // public-input commitment (see the module-level TODO).
+    // Wrap (Pallas) SRS: `g` + `h`. Lagrange basis is seeded below.
     let mut wrap_srs = WrapSrs::default();
     wrap_srs.g = wrap_g.to_vec();
     wrap_srs.h = wrap_h;
 
     let wrap_vk: WrapVerifierIndex =
         postcard::from_bytes(vk_bytes).expect("postcard wrap_vk decode");
+
+    // Rebuild the single-chunk PolyComm vector from the bare Pallas points and
+    // seed at the wrap proof's domain size. We trust the encoded basis_len to
+    // equal `wrap_vk.domain.size()` (encoder uses the same value); the cache
+    // key is derived from the VK, so any mismatch surfaces as a cache miss +
+    // on-the-fly fallback rather than wrong output.
+    let basis: Vec<PolyComm<Pallas>> = wrap_basis_pts
+        .iter()
+        .map(|p| PolyComm {
+            chunks: alloc::vec![*p],
+        })
+        .collect();
+    let domain_size = wrap_vk.domain.size as usize;
+
+    let wrap_srs_arc = Arc::new(wrap_srs);
+    seed_wrap_lagrange_basis(&wrap_srs_arc, domain_size, basis);
+
     Verifier::new(
         wrap_vk,
-        Arc::new(wrap_srs),
+        wrap_srs_arc,
         Arc::new(vesta_srs),
         step_num_chunks as usize,
     )

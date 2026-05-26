@@ -162,7 +162,11 @@ pub fn accumulator_check(verifier: &Verifier, proof: &VerifiableProof) -> bool {
     computed_sg == proof.challenge_polynomial_commitment
 }
 
-#[cfg(test)]
+// The tests use `std::fs` to read fixture JSONs + `std::sync::OnceLock` for
+// the shared SRSes, so they only build under `--features std`. The no_std
+// build covers serialize's pod-layout tests (`mod serialize::tests`) and the
+// wire/convert sibling modules' tests already gated by `cfg(feature = "std")`.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::types::{VestaSrs, WrapSrs};
@@ -218,5 +222,44 @@ mod tests {
 
             assert!(verify(&verifier, &vp), "verify should accept {dir}");
         }
+    }
+
+    /// Encode→decode round-trip: build a [`Verifier`] from the mainnet
+    /// blockchain SNARK fixture, run it through
+    /// [`serialize::encode_verifier_blob`] then [`serialize::decode_verifier_blob`],
+    /// and confirm the decoded verifier (with a pod-cast SRS + pre-seeded
+    /// wrap Lagrange basis) accepts the same proof. This is the path the SP1
+    /// guest exercises.
+    #[test]
+    fn encode_decode_verifier_blob_round_trip_accepts() {
+        let dir = "mainnet-blockchain-snark";
+        let ocaml =
+            OcamlProof::parse(&fixture(dir, "public_input_skeleton.json")).expect("skeleton");
+        let wrap_vk = parse_wrap_vk(&fixture(dir, "vk.serde.json")).expect("vk");
+        let wrap_proof = parse_wrap_proof(&fixture(dir, "proof.serde.json")).expect("proof");
+        let stmt = parse_app_statement(&fixture(dir, "app_statement.json")).expect("stmt");
+        let vp = ocaml
+            .into_verifiable(wrap_proof, &wrap_vk, &[stmt])
+            .expect("conversion");
+
+        // Encode at host side (basis is computed from the wrap SRS at wrap_vk's
+        // domain), then decode (basis is seeded into the new SRS's cache).
+        let blob = crate::serialize::encode_verifier_blob(
+            vesta_srs(),
+            wrap_srs(),
+            /* step_num_chunks */ 1,
+            &wrap_vk,
+        );
+        // The decoder needs 8-byte alignment, which `Vec<u8>` already provides
+        // on this platform (the underlying allocator returns max-aligned
+        // blocks). The SP1 guest gets it from a `#[repr(C, align(8))]` wrapper
+        // around `include_bytes!`.
+        assert_eq!(blob.as_ptr() as usize % 8, 0, "blob ptr must be 8-aligned");
+        let decoded = crate::serialize::decode_verifier_blob(&blob);
+
+        assert!(
+            verify(&decoded, &vp),
+            "decoded verifier should accept mainnet blockchain SNARK"
+        );
     }
 }

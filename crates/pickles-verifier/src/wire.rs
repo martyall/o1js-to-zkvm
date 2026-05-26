@@ -38,7 +38,6 @@ pub fn parse_wrap_proof(json: &str) -> serde_json::Result<WrapProof> {
     serde_json::from_str(json)
 }
 
-
 /// Little-endian bytes (zero-padded to the field byte size) → field, via the
 /// o1-utils checked deserializer (`FieldHelpers::from_bytes`).
 fn field_from_le<F: PrimeField>(mut le: Vec<u8>) -> Result<F, String> {
@@ -204,15 +203,23 @@ fn point_eval_chunked(v: &Value) -> Result<PointEvaluations<Vec<StepField>>, Str
     if a.len() != 2 {
         return Err("chunked eval: expected [zeta_chunks, omega_chunks]".to_string());
     }
-    let zeta = as_vec(&a[0])?.iter().map(be_hex).collect::<Result<Vec<_>, String>>()?;
-    let zeta_omega = as_vec(&a[1])?.iter().map(be_hex).collect::<Result<Vec<_>, String>>()?;
+    let zeta = as_vec(&a[0])?
+        .iter()
+        .map(be_hex)
+        .collect::<Result<Vec<_>, String>>()?;
+    let zeta_omega = as_vec(&a[1])?
+        .iter()
+        .map(be_hex)
+        .collect::<Result<Vec<_>, String>>()?;
     if zeta.len() != zeta_omega.len() {
         return Err("chunked eval: zeta/omega chunk count mismatch".to_string());
     }
     Ok(PointEvaluations { zeta, zeta_omega })
 }
 
-fn fixed_chunked<const N: usize>(v: &Value) -> Result<[PointEvaluations<Vec<StepField>>; N], String> {
+fn fixed_chunked<const N: usize>(
+    v: &Value,
+) -> Result<[PointEvaluations<Vec<StepField>>; N], String> {
     let a = as_vec(v)?;
     if a.len() != N {
         return Err(alloc::format!(
@@ -220,7 +227,10 @@ fn fixed_chunked<const N: usize>(v: &Value) -> Result<[PointEvaluations<Vec<Step
             a.len()
         ));
     }
-    let out = a.iter().map(point_eval_chunked).collect::<Result<Vec<_>, String>>()?;
+    let out = a
+        .iter()
+        .map(point_eval_chunked)
+        .collect::<Result<Vec<_>, String>>()?;
     out.try_into()
         .map_err(|_| "evals: length invariant".to_string())
 }
