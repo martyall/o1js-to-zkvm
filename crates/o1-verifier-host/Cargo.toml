@@ -9,15 +9,11 @@ path = "src/main.rs"
 
 [dependencies]
 sp1-sdk = { workspace = true, features = ["profiling"] }
-serde = { workspace = true }
-serde_json = { version = "1" }
-rmp-serde = "1"
-base64 = "0.13"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-mina-curves = { workspace = true, default-features = false }
-ark-ff = { workspace = true, features = ["std"] }
-ark-serialize = { workspace = true, features = ["std"] }
+# Host-side construction of the VerifiableProof from a fixture directory
+# (`wire::parse_*` + `convert::OcamlProof::into_verifiable`).
+pickles-verifier = { path = "../pickles-verifier" }
 
 [build-dependencies]
 sp1-build = { workspace = true }

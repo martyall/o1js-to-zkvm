@@ -26,15 +26,17 @@ fn main() {
     println!("cargo::rerun-if-changed={vk_path}");
     println!("cargo::rerun-if-env-changed=VK_JSON");
 
-    let vk_json = fs::read_to_string(&vk_path)
-        .unwrap_or_else(|e| panic!("failed to read {vk_path}: {e}"));
-    let wrap_vk = parse_wrap_vk(&vk_json)
-        .unwrap_or_else(|e| panic!("failed to parse wrap VK: {e}"));
+    let vk_json =
+        fs::read_to_string(&vk_path).unwrap_or_else(|e| panic!("failed to read {vk_path}: {e}"));
+    let wrap_vk =
+        parse_wrap_vk(&vk_json).unwrap_or_else(|e| panic!("failed to parse wrap VK: {e}"));
 
     let vesta_srs = get_srs::<Vesta>();
     let wrap_srs = get_srs::<Pallas>();
 
-    let blob = encode_verifier_blob(&vesta_srs, &wrap_srs, /* step_num_chunks */ 1, &wrap_vk);
+    let blob = encode_verifier_blob(
+        &vesta_srs, &wrap_srs, /* step_num_chunks */ 1, &wrap_vk,
+    );
 
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR set by cargo");
     fs::write(Path::new(&out_dir).join("verifier.bin"), &blob)
