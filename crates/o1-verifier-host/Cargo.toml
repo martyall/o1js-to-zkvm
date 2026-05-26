@@ -8,8 +8,8 @@ name = "o1zkvm"
 path = "src/main.rs"
 
 [dependencies]
-sp1-sdk = { workspace = true, features = ["profiling"] }
-clap = { version = "4", features = ["derive"] }
+sp1-sdk = { workspace = true, features = ["cuda", "network"] }
+clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 # Host-side construction of the VerifiableProof from a fixture directory
 # (`wire::parse_*` + `convert::OcamlProof::into_verifiable`).
@@ -17,3 +17,10 @@ pickles-verifier = { path = "../pickles-verifier" }
 
 [build-dependencies]
 sp1-build = { workspace = true }
+
+[features]
+default = []
+# Opt-in: enable sp1-sdk's sampling profiler. Forces the portable executor
+# (the JIT path is gated off when profiling is on), so only turn this on
+# for `make rust-e2e-tests-profile` runs.
+profiling = ["sp1-sdk/profiling"]

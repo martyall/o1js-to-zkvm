@@ -39,6 +39,6 @@ VK_JSON="$FIXTURE_DIR/vk.serde.json" make build-rust
 # The guest reads a VerifiableProof from stdin, runs pickles_verifier::verify,
 # and commits a bool. The host asserts that bool is true.
 echo "==> Verifying inside SP1 zkVM (execute mode)..."
-target/release/o1zkvm --fixture-dir "$FIXTURE_DIR"
+target/release/o1zkvm --fixture-dir "$FIXTURE_DIR" execute
 
 echo "==> All e2e tests passed!"

@@ -1,4 +1,4 @@
-.PHONY: help install build-rust rust-unit-tests rust-e2e-tests rust-e2e-tests-profile prove-cpu prove-cuda lint-check lint dump-simplechain-fixtures clear-simplechain-fixtures dump-treeproofreturn-fixtures clear-treeproofreturn-fixtures dump-nrr-fixtures clear-nrr-fixtures fetch-mainnet-fixture
+.PHONY: help install build-rust rust-unit-tests rust-e2e-tests rust-e2e-tests-profile prove-cpu prove-cuda prove-network lint-check lint dump-simplechain-fixtures clear-simplechain-fixtures dump-treeproofreturn-fixtures clear-treeproofreturn-fixtures dump-nrr-fixtures clear-nrr-fixtures fetch-mainnet-fixture
 
 # Default fixture: the real mainnet blockchain SNARK we fetch via the
 # `fetch_blockchain_fixture` OCaml tool. The guest's build.rs reads
@@ -33,8 +33,12 @@ help: ## Show this help menu
 install: ## Install SP1 toolchain and protoc
 	./install.sh
 
+# Extra host-crate features to enable in `make build-rust`. Used by the
+# profiling target to flip on sp1-sdk/profiling (which also forces the
+# portable executor; do not enable for production prove runs).
+CARGO_FEATURES ?=
 build-rust: ## Build the o1zkvm Rust binary (override VK_JSON for a different baked-in VK)
-	cargo build --release -p o1-verifier-host
+	cargo build --release -p o1-verifier-host $(if $(CARGO_FEATURES),--features $(CARGO_FEATURES))
 
 rust-unit-tests: ## Run pickles-verifier's std unit tests over the fixture matrix
 	cargo test --release -p pickles-verifier
@@ -43,13 +47,16 @@ rust-e2e-tests: ## Run the full Rust+SP1 e2e against $(FIXTURE_DIR) (execute mod
 	./scripts/rust-e2e-test.sh
 
 rust-e2e-tests-profile: ## Run e2e under SP1's sampling profiler (Gecko JSON; view at profiler.firefox.com)
-	./scripts/rust-e2e-test-profile.sh
+	CARGO_FEATURES=profiling ./scripts/rust-e2e-test-profile.sh
 
 prove-cpu: ## Generate a real SP1 proof on the host CPU (rayon-parallel; tune RAYON_NUM_THREADS)
 	SP1_PROVER=cpu ./scripts/rust-prove.sh
 
 prove-cuda: ## Generate a real SP1 proof on a local NVIDIA GPU (downloads sp1-gpu-server on first run)
 	SP1_PROVER=cuda ./scripts/rust-prove.sh
+
+prove-network: ## Submit a real SP1 proof to Succinct's prover network (requires NETWORK_PRIVATE_KEY; see scripts/rust-prove.sh for NETWORK_* knobs)
+	SP1_PROVER=network ./scripts/rust-prove.sh
 
 lint-check: ## Run all linters and formatters in check-only mode
 	cargo fmt -p o1-verifier -p o1-verifier-host -p pickles-verifier -- --check
