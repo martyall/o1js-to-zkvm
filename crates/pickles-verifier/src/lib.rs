@@ -210,18 +210,10 @@ mod tests {
             let wrap_proof = parse_wrap_proof(&fixture(dir, "proof.serde.json")).expect("proof");
             let stmt = parse_app_statement(&fixture(dir, "app_statement.json")).expect("stmt");
 
-            let step_domain_log2 = ocaml.step_domain_log2 as usize;
             let vp = ocaml
                 .into_verifiable(wrap_proof, &wrap_vk, &[stmt])
                 .expect("conversion");
-            let verifier = Verifier::new(
-                wrap_vk,
-                wrap_srs().clone(),
-                vesta_srs().clone(),
-                step_domain_log2,
-                1,
-            )
-            .expect("verifier");
+            let verifier = Verifier::new(wrap_vk, wrap_srs().clone(), vesta_srs().clone(), 1);
 
             assert!(verify(&verifier, &vp), "verify should accept {dir}");
         }

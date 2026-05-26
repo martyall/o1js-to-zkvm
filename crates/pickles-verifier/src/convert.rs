@@ -19,10 +19,8 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use blake2::{Blake2s256, Digest};
 use kimchi::circuits::constraints::FeatureFlags;
-use kimchi::circuits::polynomials::permutation::Shifts;
 use kimchi::linearization::expr_linearization;
 use mina_curves::pasta::{Pallas, Vesta};
 use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
@@ -161,44 +159,36 @@ fn hash_messages_for_next_wrap(
 // ---------------------------------------------------------------------------
 
 impl Verifier {
-    /// Build the per-tag verifier. The step domain generator and permutation
-    /// shifts are derived from `step_domain_log2`; `step_zk_rows` from
-    /// `num_chunks` (`(16·nc + 5) / 7`); the step SRS length log2 is the
-    /// protocol-fixed [`STEP_IPA_ROUNDS`]; the linearization is the Tick
-    /// polynomial specialized to the step circuit's (all-off) feature flags,
-    /// so it is `SkipIf`-free and kimchi's `PolishToken::evaluate` consumes it
-    /// directly. Fails only if `step_domain_log2` exceeds the field's
-    /// two-adicity (unreachable for valid step circuits).
+    /// Build the per-tag verifier. `step_zk_rows` comes from `num_chunks`
+    /// (`(16·nc + 5) / 7`); the step SRS length log2 is the protocol-fixed
+    /// [`STEP_IPA_ROUNDS`]; the linearization is the Tick polynomial
+    /// specialized to the step circuit's (all-off) feature flags, so it is
+    /// `SkipIf`-free and kimchi's `PolishToken::evaluate` consumes it
+    /// directly. The wrap VK is reconstructed: its serde form
+    /// `#[serde(skip)]`s `srs`, `linearization`, `powers_of_alpha`, AND
+    /// `endo`. The endo is the Vesta *base* endo (`endos::<Vesta>().0`,
+    /// matching kimchi's `pasta_fq_plonk_verifier_index` OCaml stub), NOT the
+    /// deserialized default (zero), which would zero out the endomul-gate
+    /// terms in `ft_eval0`. The lazy `OnceCell`s (`w`,
+    /// `permutation_vanishing_polynomial_m`) recompute correctly for the nc=1
+    /// wrap circuit (zk_rows = 3, where the 3-factor and n-factor
+    /// perm-vanishing forms agree).
     ///
     /// `wrap_srs` and `vesta_srs` are passed as `Arc`s so one SRS per curve
-    /// can back many tags / proofs; `wrap_srs` is also stored on the wrap VK
-    /// (whose serde form `#[serde(skip)]`s the SRS).
+    /// can back many tags / proofs.
     pub fn new(
         wrap_vk: WrapVerifierIndex,
         wrap_srs: Arc<WrapSrs>,
         vesta_srs: Arc<VestaSrs>,
-        step_domain_log2: usize,
         step_num_chunks: usize,
-    ) -> Result<Verifier, String> {
+    ) -> Verifier {
         let mut wrap_vk = wrap_vk;
         wrap_vk.srs = wrap_srs;
-        // The serde form `#[serde(skip)]`s the wrap VK's `linearization`,
-        // `powers_of_alpha` AND `endo`; rebuild all three (features off, like
-        // the step circuit). The endo is the Vesta *base* endo
-        // (`endos::<Vesta>().0`, matching kimchi's `pasta_fq_plonk_verifier_index`
-        // OCaml stub), NOT the deserialized default (zero), which would zero
-        // out the endomul-gate terms in `ft_eval0`. The lazy `OnceCell`s (`w`,
-        // `permutation_vanishing_polynomial_m`) recompute correctly for the
-        // nc=1 wrap circuit (zk_rows = 3, where the 3-factor and n-factor
-        // perm-vanishing forms agree).
         let (wrap_lin, wrap_alphas) =
             expr_linearization::<WrapField>(Some(&FeatureFlags::default()), true);
         wrap_vk.linearization = wrap_lin;
         wrap_vk.powers_of_alpha = wrap_alphas;
         wrap_vk.endo = endos::<Vesta>().0;
-        let domain = Radix2EvaluationDomain::<StepField>::new(1usize << step_domain_log2)
-            .ok_or_else(|| format!("no radix-2 domain of size 2^{step_domain_log2}"))?;
-        let step_shifts: [StepField; 7] = *Shifts::new(&domain).shifts();
         // Step feature flags are all-off, so `Some(default)` yields a
         // `SkipIf`-free linearization (kimchi's evaluator panics on `SkipIf`).
         // The `Alphas` map is kept (not dropped): stage 1's `ft_eval0` +
@@ -206,18 +196,15 @@ impl Verifier {
         // alphas.
         let (linearization, powers_of_alpha) =
             expr_linearization::<StepField>(Some(&FeatureFlags::default()), true);
-        Ok(Verifier {
+        Verifier {
             wrap_vk,
             vesta_srs,
-            step_domain_log2,
             step_zk_rows: (16 * step_num_chunks + 5) / 7,
             step_srs_length_log2: STEP_IPA_ROUNDS,
-            step_generator: domain.group_gen,
-            step_shifts,
             step_endo: endos::<Vesta>().1,
             linearization,
             powers_of_alpha,
-        })
+        }
     }
 }
 

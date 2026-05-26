@@ -93,16 +93,10 @@ pub struct Verifier {
     /// step (`Vesta`) SRS, for the stage-2 accumulator `compute_sg` MSM. Shared
     /// via `Arc` so a single SRS can back many tags / proofs.
     pub vesta_srs: Arc<VestaSrs>,
-    /// step domain log2 (`stepProverIndex.domain.log_size_of_group`).
-    pub step_domain_log2: usize,
     /// kimchi `zkRows` = `(16·nc + 5) / 7`.
     pub step_zk_rows: usize,
     /// step SRS size log2 (cycle constant = [`STEP_IPA_ROUNDS`]).
     pub step_srs_length_log2: usize,
-    /// step domain generator `omega`.
-    pub step_generator: StepField,
-    /// permutation shifts for the step domain.
-    pub step_shifts: [StepField; 7],
     /// step-field scalar endo coefficient.
     pub step_endo: StepField,
     /// step (`ft_eval0`) linearization polynomial, consumed by stage 1 via the
