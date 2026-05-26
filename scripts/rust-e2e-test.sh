@@ -1,35 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf "$WORK_DIR"' EXIT
+# End-to-end: build the o1zkvm host (the guest sub-build bakes the wrap VK +
+# SRSes + Lagrange basis into verifier.bin from $FIXTURE_DIR/vk.serde.json),
+# then run the guest inside the SP1 zkVM emulator against the fixture's proof
+# + public input + app statement. The guest commits a bool; we assert it's
+# true.
+#
+# Defaults to the real mainnet Mina blockchain SNARK fixture (fetched by
+# mina/src/app/fetch_blockchain_fixture). Override FIXTURE_DIR to point at any
+# other dumped pickles wire (vk.serde.json + proof.serde.json +
+# public_input_skeleton.json + app_statement.json), but rebuild after — the
+# VK is fixed per ELF.
 
-echo "==> Working directory: $WORK_DIR"
+FIXTURE_DIR=${FIXTURE_DIR:-$(pwd)/fixtures/mainnet-blockchain-snark}
 
-# Step 1: Build TypeScript CLI
-echo "==> Building TypeScript CLI..."
-make build-ts
+if [ ! -d "$FIXTURE_DIR" ]; then
+  echo "error: FIXTURE_DIR=$FIXTURE_DIR does not exist" >&2
+  exit 1
+fi
 
-# Step 2: Compile the circuit
-echo "==> Compiling circuit..."
-npx o1js-cli compile -o "$WORK_DIR/circuit.json"
+for f in vk.serde.json proof.serde.json public_input_skeleton.json app_statement.json; do
+  if [ ! -f "$FIXTURE_DIR/$f" ]; then
+    echo "error: missing $FIXTURE_DIR/$f" >&2
+    exit 1
+  fi
+done
 
-# Step 3: Build the o1zkvm host CLI (guest embeds circuit.json at compile time)
-echo "==> Building o1zkvm..."
-CIRCUIT_JSON="$WORK_DIR/circuit.json" make build-rust
+echo "==> Fixture: $FIXTURE_DIR"
 
-# Step 4: Generate a proof and verify with TS CLI
-echo "==> Generating proof..."
-cat > "$WORK_DIR/inputs.json" <<'JSON'
-{"publicInput": "8", "privateInput": "2"}
-JSON
-npx o1js-cli prove -i "$WORK_DIR/inputs.json" -o "$WORK_DIR/proof.json"
+# Build host + guest. The guest's build.rs reads VK_JSON, computes the wrap
+# Lagrange basis at the VK's domain, pod-encodes everything into
+# OUT_DIR/verifier.bin, and the guest include_bytes!'s it.
+echo "==> Building o1zkvm (host + guest, VK baked from vk.serde.json)..."
+VK_JSON="$FIXTURE_DIR/vk.serde.json" make build-rust
 
-echo "==> Verifying with TS CLI..."
-npx o1js-cli verify -c "$WORK_DIR/circuit.json" -p "$WORK_DIR/proof.json"
-
-# Step 5: Verify inside SP1 zkVM (mock mode)
-echo "==> Verifying inside SP1 zkVM (mock mode)..."
-SP1_PROVER=mock target/release/o1zkvm --proof "$WORK_DIR/proof.json"
+# Execute mode: the SP1 zkVM emulator runs the guest ELF, no real proving.
+# The guest reads a VerifiableProof from stdin, runs pickles_verifier::verify,
+# and commits a bool. The host asserts that bool is true.
+echo "==> Verifying inside SP1 zkVM (execute mode)..."
+target/release/o1zkvm --fixture-dir "$FIXTURE_DIR"
 
 echo "==> All e2e tests passed!"

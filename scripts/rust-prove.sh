@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generate a real SP1 proof end-to-end. Backend selected by SP1_PROVER:
+# Generate a real SP1 proof of pickles verification end-to-end. Backend
+# selected by SP1_PROVER:
 #   cpu     - host CPU (rayon-parallel; tune RAYON_NUM_THREADS)
 #   cuda    - local NVIDIA GPU via sp1-gpu-server
 #   network - Succinct prover network (requires creds)
 # Defaults to cpu so machines without a GPU still work.
+#
+# Inputs come from $FIXTURE_DIR (defaults to fixtures/mainnet-blockchain-snark).
+# The fixture's vk.serde.json is also baked into the guest ELF at build time
+# — the VK is fixed per ELF.
 
 export SP1_PROVER=${SP1_PROVER:-cpu}
 export RUST_LOG=${RUST_LOG:-info}
+FIXTURE_DIR=${FIXTURE_DIR:-$(pwd)/fixtures/mainnet-blockchain-snark}
 CUDA_DEVICE=${CUDA_DEVICE:-0}
 SP1_GPU_SOCKET="/tmp/sp1-cuda-${CUDA_DEVICE}.sock"
 SP1_GPU_LOG="/tmp/sp1-gpu-server-${CUDA_DEVICE}.log"
 GPU_PID=""
 
-WORK_DIR=$(mktemp -d)
-
 cleanup() {
-  rm -rf "$WORK_DIR"
   if [ -n "$GPU_PID" ] && kill -0 "$GPU_PID" 2>/dev/null; then
     kill "$GPU_PID" 2>/dev/null || true
     wait "$GPU_PID" 2>/dev/null || true
@@ -55,37 +58,23 @@ ensure_gpu_server() {
   echo "==> sp1-gpu-server ready (PID $GPU_PID)"
 }
 
-echo "==> Working directory: $WORK_DIR"
+if [ ! -d "$FIXTURE_DIR" ]; then
+  echo "error: FIXTURE_DIR=$FIXTURE_DIR does not exist" >&2
+  exit 1
+fi
+
+echo "==> Fixture: $FIXTURE_DIR"
 echo "==> SP1_PROVER=$SP1_PROVER"
 
-# Step 1: Build TypeScript CLI
-echo "==> Building TypeScript CLI..."
-make build-ts
-
-# Step 2: Compile the circuit
-echo "==> Compiling circuit..."
-npx o1js-cli compile -o "$WORK_DIR/circuit.json"
-
-# Step 3: Build the o1zkvm host CLI (guest embeds circuit.json at compile time)
+# Build host + guest with VK baked from this fixture.
 echo "==> Building o1zkvm..."
-CIRCUIT_JSON="$WORK_DIR/circuit.json" make build-rust
+VK_JSON="$FIXTURE_DIR/vk.serde.json" make build-rust
 
-# Step 4: Generate a Kimchi proof and verify with TS CLI
-echo "==> Generating Kimchi proof..."
-cat > "$WORK_DIR/inputs.json" <<'JSON'
-{"publicInput": "8", "privateInput": "2"}
-JSON
-npx o1js-cli prove -i "$WORK_DIR/inputs.json" -o "$WORK_DIR/proof.json"
-
-echo "==> Verifying Kimchi proof with TS CLI..."
-npx o1js-cli verify -c "$WORK_DIR/circuit.json" -p "$WORK_DIR/proof.json"
-
-# Step 5: Generate the real SP1 proof
 if [ "$SP1_PROVER" = "cuda" ]; then
   ensure_gpu_server
 fi
 
 echo "==> Generating real SP1 proof ($SP1_PROVER)..."
-target/release/o1zkvm --proof "$WORK_DIR/proof.json" --prove
+target/release/o1zkvm --fixture-dir "$FIXTURE_DIR" --prove
 
 echo "==> SP1 proof generation succeeded."

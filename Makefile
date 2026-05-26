@@ -1,17 +1,23 @@
-.PHONY: help install deps build-ts build-rust ts-unit-tests rust-unit-tests ts-e2e-tests rust-e2e-tests rust-e2e-tests-profile prove-cpu prove-cuda lint-check lint dump-simplechain-fixtures clear-simplechain-fixtures dump-treeproofreturn-fixtures clear-treeproofreturn-fixtures dump-nrr-fixtures clear-nrr-fixtures
+.PHONY: help install build-rust rust-unit-tests rust-e2e-tests rust-e2e-tests-profile prove-cpu prove-cuda lint-check lint dump-simplechain-fixtures clear-simplechain-fixtures dump-treeproofreturn-fixtures clear-treeproofreturn-fixtures dump-nrr-fixtures clear-nrr-fixtures fetch-mainnet-fixture
 
-CIRCUIT_FIXTURE := $(CURDIR)/fixtures/circuit.json
+# Default fixture: the real mainnet blockchain SNARK we fetch via the
+# `fetch_blockchain_fixture` OCaml tool. The guest's build.rs reads
+# vk.serde.json to bake into verifier.bin; the e2e script reads all four
+# files at runtime to assemble the VerifiableProof.
+FIXTURE_DIR ?= $(CURDIR)/fixtures/mainnet-blockchain-snark
 
-# Default to the bundled fixture and resolve to an absolute path: cargo build
-# scripts run with a different cwd, so a relative CIRCUIT_JSON fails at build time.
-CIRCUIT_JSON ?= $(CIRCUIT_FIXTURE)
-export CIRCUIT_JSON := $(abspath $(CIRCUIT_JSON))
+# Default to the bundled mainnet VK and resolve to an absolute path: cargo
+# build scripts run with a different cwd, so a relative VK_JSON fails at
+# build time.
+VK_JSON ?= $(FIXTURE_DIR)/vk.serde.json
+export VK_JSON := $(abspath $(VK_JSON))
 
 # Output directories for the pickles fixtures (overridable). One per recursion
 # pattern: NRR (mpv=0), Simple_chain (mpv=1), Tree_proof_return (mpv=2).
 NRR_FIXTURE_DIR ?= $(CURDIR)/fixtures/nrr
 SIMPLECHAIN_FIXTURE_DIR ?= $(CURDIR)/fixtures/simplechain
 TREEPROOFRETURN_FIXTURE_DIR ?= $(CURDIR)/fixtures/treeproofreturn
+MAINNET_FIXTURE_DIR ?= $(CURDIR)/fixtures/mainnet-blockchain-snark
 # Flake ref for the mina submodule dev shell. We address it as an explicit
 # git+file URL with `?submodules=1` so nix pulls mina's nested submodules
 # (proof-systems, kimchi-stubs-vendors). The plain `mina#default` relative
@@ -24,29 +30,16 @@ MINA_DEVSHELL := git+file://$(CURDIR)/mina?submodules=1\#default
 help: ## Show this help menu
 	@awk 'BEGIN {FS = ":.*?## "; printf "Usage: make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-install: deps ## Install SP1 toolchain, protoc, and npm dependencies
+install: ## Install SP1 toolchain and protoc
 	./install.sh
 
-deps: ## Install npm dependencies
-	npm ci
-
-build-ts: ## Build the TypeScript CLI (run as `npx o1js-cli ...`)
-	npm run build
-	chmod +x dist/src/cli.js
-
-build-rust: ## Build the o1zkvm Rust binary (override CIRCUIT_JSON to use a custom circuit)
+build-rust: ## Build the o1zkvm Rust binary (override VK_JSON for a different baked-in VK)
 	cargo build --release -p o1-verifier-host
 
-ts-unit-tests: build-ts ## Run TypeScript unit tests
-	npm test
+rust-unit-tests: ## Run pickles-verifier's std unit tests over the fixture matrix
+	cargo test --release -p pickles-verifier
 
-rust-unit-tests: ## Run native Rust unit and integration tests against the checked-in fixtures
-	cargo test --release -p o1-verifier-lib --features std
-
-ts-e2e-tests: build-ts ## Run the TypeScript CLI end-to-end script
-	./scripts/ts-e2e-test.sh
-
-rust-e2e-tests: ## Run the full Rust+SP1 end-to-end script (mock prover, no GPU)
+rust-e2e-tests: ## Run the full Rust+SP1 e2e against $(FIXTURE_DIR) (execute mode, no real proving)
 	./scripts/rust-e2e-test.sh
 
 rust-e2e-tests-profile: ## Run e2e under SP1's sampling profiler (Gecko JSON; view at profiler.firefox.com)
@@ -59,20 +52,19 @@ prove-cuda: ## Generate a real SP1 proof on a local NVIDIA GPU (downloads sp1-gp
 	SP1_PROVER=cuda ./scripts/rust-prove.sh
 
 lint-check: ## Run all linters and formatters in check-only mode
-	npm run format:check
-	npm run lint
-	cargo fmt -p o1-verifier -p o1-verifier-host -p o1-verifier-lib -- --check
+	cargo fmt -p o1-verifier -p o1-verifier-host -p pickles-verifier -- --check
 	# Build the host first so the guest ELF exists for include_elf!
 	# (clippy skips build scripts, so we need to build separately)
 	cargo build --release -p o1-verifier-host
-	cargo clippy --all-targets --features std -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
+	# no_std variant of the verifier crate (SP1-guest configuration)
+	cd crates/pickles-verifier && cargo clippy --no-default-features --all-targets -- -D warnings
 
 lint: ## Run all linters and formatters with auto-fix
-	npm run format
-	npm run lint
-	cargo fmt -p o1-verifier -p o1-verifier-host -p o1-verifier-lib
+	cargo fmt -p o1-verifier -p o1-verifier-host -p pickles-verifier
 	cargo build --release -p o1-verifier-host
-	cargo clippy --all-targets --features std --fix --allow-dirty --allow-staged -- -D warnings
+	cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged -- -D warnings
+	cd crates/pickles-verifier && cargo clippy --no-default-features --all-targets --fix --allow-dirty --allow-staged -- -D warnings
 
 dump-simplechain-fixtures: ## Dump Simple_chain wrap-proof fixtures (b0,b1,b2) to $(SIMPLECHAIN_FIXTURE_DIR)
 	mkdir -p "$(SIMPLECHAIN_FIXTURE_DIR)/wrap0" "$(SIMPLECHAIN_FIXTURE_DIR)/wrap1" "$(SIMPLECHAIN_FIXTURE_DIR)/wrap2"
@@ -94,3 +86,8 @@ dump-nrr-fixtures: ## Dump No_recursion_return wrap-proof fixture (mpv=0) to $(N
 
 clear-nrr-fixtures: ## Remove the No_recursion_return fixture directory ($(NRR_FIXTURE_DIR))
 	rm -rf "$(NRR_FIXTURE_DIR)"
+
+fetch-mainnet-fixture: ## Fetch a fresh mainnet blockchain-SNARK fixture (MINA_GRAPHQL_URI required) into $(MAINNET_FIXTURE_DIR)
+	@[ -n "$$MINA_GRAPHQL_URI" ] || (echo "error: set MINA_GRAPHQL_URI (e.g. https://api.minascan.io/node/mainnet/v1/graphql)" >&2; exit 1)
+	mkdir -p "$(MAINNET_FIXTURE_DIR)"
+	nix develop $(MINA_DEVSHELL) -c bash -c 'cd mina && MINA_GRAPHQL_URI="$$MINA_GRAPHQL_URI" dune exec src/app/fetch_blockchain_fixture/fetch_blockchain_fixture.exe -- "$(MAINNET_FIXTURE_DIR)"'
