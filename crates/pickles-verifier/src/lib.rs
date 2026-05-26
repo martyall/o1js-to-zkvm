@@ -31,50 +31,50 @@ pub mod convert;
 
 use alloc::vec::Vec;
 
-use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial};
+use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
+use mina_curves::pasta::Vesta;
 use mina_poseidon::sponge::ScalarChallenge;
 use poly_commitment::commitment::b_poly_coefficients;
-use poly_commitment::SRS;
 
 use types::{StepField, VerifiableProof, Verifier};
 
 /// Fully verify a single Pickles proof against its tag's [`Verifier`].
-/// PS `Pickles.Verify.verify` (`verify v p = verifyBatch v [p]`).
-///
-/// `std`-only: the stage-3 dlog check delegates to kimchi's `batch_verify`,
-/// which draws batching randomness from `thread_rng`. The no_std core exposes
-/// the building blocks ([`accumulator_check`], [`deferred::expand_deferred`],
-/// [`deferred::wrap_public_input`]) for a guest-side dlog check.
-#[cfg(feature = "std")]
+/// PS `Pickles.Verify.verify`. Deterministic + `no_std`.
 pub fn verify(verifier: &Verifier, proof: &VerifiableProof) -> bool {
     verify_batch(verifier, core::slice::from_ref(proof))
 }
 
 /// Verify a batch of proofs sharing one tag. PS `Pickles.Verify.verifyBatch`.
+/// Deterministic + `no_std`.
 ///
 /// Three stages, AND-folded:
-///   1. **Expand deferred values** — reconstruct the wrap deferred-values
-///      output from the carried minimal skeleton ([`deferred::expand_deferred`]):
-///      sponge replay → `xi`/`r`, combined-inner-product, and `ft_eval0` via the
-///      kimchi linearization interpreter. PS `expandDeferredForVerify`.
-///   2. **IPA-step accumulator check** ([`accumulator_check`]) —
-///      `compute_sg(expanded bp challenges)` on the Vesta SRS must equal
-///      `challenge_polynomial_commitment`.
-///   3. **Wrap opening-proof / dlog check** — assemble each proof's wrap kimchi
-///      public input from its expanded deferred values + message digests
-///      ([`deferred::wrap_public_input`]), then run ONE amortized kimchi
-///      `batch_verify` over all `(wrap_vk, wrap_proof, public_input)`. PS
-///      `verifyOpeningProofsBatch`.
-#[cfg(feature = "std")]
+///   1. **Expand deferred values** ([`deferred::expand_deferred`]): sponge
+///      replay → `xi`/`r`, combined-inner-product, `ft_eval0`. PS
+///      `expandDeferredForVerify`.
+///   2. **IPA-step accumulator check** ([`accumulator_check`]): `compute_sg`
+///      must equal `challenge_polynomial_commitment`.
+///   3. **Wrap opening-proof / dlog check**: assemble each proof's wrap kimchi
+///      public input ([`deferred::wrap_public_input`]) and run ONE amortized
+///      kimchi `batch_verify_with_rng`. PS `verifyOpeningProofsBatch`.
+///
+/// Stage 3's batching RNG is Fiat-Shamir-derived — a `ChaCha20Rng` seeded by
+/// `blake2s(proofs ‖ public_inputs)` — binding the random linear combination of
+/// the IPA verification equations to the proof. This is sound (a fixed/known
+/// seed would let a prover forge an invalid proof whose combination vanishes)
+/// and deterministic (no OS entropy, so it runs in a zkVM guest).
 pub fn verify_batch(verifier: &Verifier, proofs: &[VerifiableProof]) -> bool {
+    use ark_serialize::CanonicalSerialize;
+    use blake2::{Blake2s256, Digest};
     use groupmap::GroupMap;
-    use kimchi::verifier::{batch_verify, Context};
+    use kimchi::verifier::{batch_verify_with_rng, Context};
     use mina_curves::pasta::{Pallas, PallasParameters};
     use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
     use mina_poseidon::pasta::FULL_ROUNDS;
     use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
     use poly_commitment::commitment::CommitmentCurve;
     use poly_commitment::ipa::OpeningProof;
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::SeedableRng;
     use types::WrapField;
 
     // Stage 2 (accumulator check) per proof, AND-folded with short-circuit.
@@ -95,7 +95,24 @@ pub fn verify_batch(verifier: &Verifier, proofs: &[VerifiableProof]) -> bool {
         })
         .collect();
 
-    // Stage 3: one amortized kimchi `batch_verify` over the wrap proofs.
+    // Fiat-Shamir seed for stage 3's batching RNG: bind it to the proofs +
+    // public inputs (see fn doc). postcard serializes the serde-only proof.
+    let mut hasher = Blake2s256::new();
+    hasher.update(b"pickles-verifier/batch-dlog-rng/v1");
+    for (p, pi) in proofs.iter().zip(pis.iter()) {
+        let proof_bytes = postcard::to_allocvec(&p.wrap_proof).expect("serialize wrap proof");
+        hasher.update((proof_bytes.len() as u64).to_le_bytes());
+        hasher.update(&proof_bytes);
+        let mut pi_bytes = Vec::new();
+        pi.serialize_compressed(&mut pi_bytes)
+            .expect("serialize public input");
+        hasher.update((pi_bytes.len() as u64).to_le_bytes());
+        hasher.update(&pi_bytes);
+    }
+    let seed: [u8; 32] = hasher.finalize().into();
+    let mut rng = ChaCha20Rng::from_seed(seed);
+
+    // Stage 3: one amortized kimchi dlog check over the wrap proofs.
     let contexts: Vec<Context<FULL_ROUNDS, Pallas, OpeningProof<Pallas, FULL_ROUNDS>, _>> = proofs
         .iter()
         .zip(pis.iter())
@@ -109,10 +126,14 @@ pub fn verify_batch(verifier: &Verifier, proofs: &[VerifiableProof]) -> bool {
     let group_map = <Pallas as CommitmentCurve>::Map::setup();
     type WrapFqSponge = DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
     type WrapFrSponge = DefaultFrSponge<WrapField, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
-    batch_verify::<FULL_ROUNDS, Pallas, WrapFqSponge, WrapFrSponge, OpeningProof<Pallas, FULL_ROUNDS>>(
-        &group_map,
-        &contexts,
-    )
+    batch_verify_with_rng::<
+        FULL_ROUNDS,
+        Pallas,
+        WrapFqSponge,
+        WrapFrSponge,
+        OpeningProof<Pallas, FULL_ROUNDS>,
+        ChaCha20Rng,
+    >(&group_map, &contexts, &mut rng)
     .is_ok()
 }
 
@@ -127,14 +148,27 @@ pub fn accumulator_check(verifier: &Verifier, proof: &VerifiableProof) -> bool {
         .iter()
         .map(|c| ScalarChallenge::new(*c).to_field(&verifier.step_endo))
         .collect();
-    let b_poly = DensePolynomial::from_coefficients_vec(b_poly_coefficients(&chals));
-    let computed_sg = verifier.vesta_srs.commit_non_hiding(&b_poly, 1).chunks[0];
+    // compute_sg = the non-hiding commitment of the IPA challenge polynomial
+    // b(X) on the Vesta SRS (chunk 0): an MSM of b's coefficients against the
+    // SRS generators. no_std equivalent of `SRS::commit_non_hiding` (std-gated
+    // upstream), valid because b fits in a single chunk.
+    let coeffs = b_poly_coefficients(&chals);
+    let g = &verifier.vesta_srs.g;
+    let computed_sg = if coeffs.is_empty() {
+        Vesta::zero()
+    } else {
+        let n = coeffs.len().min(g.len());
+        <<Vesta as AffineRepr>::Group as VariableBaseMSM>::msm(&g[..n], &coeffs[..n])
+            .expect("compute_sg MSM")
+            .into_affine()
+    };
     computed_sg == proof.challenge_polynomial_commitment
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use poly_commitment::SRS; // `SRS::create` (trait method) for the test SRSes
     use crate::types::{VestaSrs, WrapSrs, STEP_IPA_ROUNDS};
     use crate::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk, OcamlProof};
     use std::sync::Arc;
