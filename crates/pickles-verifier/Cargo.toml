@@ -12,7 +12,6 @@ default = ["std"]
 std = [
   "dep:serde_json",
   "dep:hex",
-  "dep:o1-utils",
   "ark-ff/std",
   "kimchi/parallel",
   "poly-commitment/parallel",
@@ -38,8 +37,12 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
 # Pod casts for the SP1-guest verifier blob (`serialize` module).
 bytemuck = { version = "1", default-features = false, features = ["derive"] }
+# serde_with + o1_utils::serialization::SerdeAs to drive `#[serde_as]` on the
+# bare-`Fp`/`Fq` fields of `VerifiableProof` etc., so `sp1_zkvm::io::read::<VerifiableProof>()`
+# works in the guest (arkworks `Fp`/`Fq` don't impl native serde Serialize).
+serde_with = { version = "3", default-features = false, features = ["alloc", "macros"] }
+o1-utils = { path = "../../mina/src/lib/crypto/proof-systems/utils", default-features = false }
 
 # std-only (fixture wire/parsing + host-side conversion)
-o1-utils = { path = "../../mina/src/lib/crypto/proof-systems/utils", default-features = false, optional = true }
 serde_json = { version = "1", optional = true }
 hex = { version = "0.4", optional = true }

@@ -20,8 +20,11 @@ use kimchi::proof::{PointEvaluations, ProverProof};
 use kimchi::verifier_index::VerifierIndex;
 use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
 use mina_poseidon::pasta::FULL_ROUNDS;
+use o1_utils::serialization::SerdeAs;
 use poly_commitment::ipa::{endos, OpeningProof};
 use poly_commitment::OpenProof;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 /// Step-proof field (Tick).
 pub type StepField = Fp;
@@ -55,27 +58,36 @@ pub const WRAP_IPA_ROUNDS: usize = 15;
 
 /// Minimal Plonk deferred values: the raw 128-bit (pre-endo) challenges as
 /// field elements.
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlonkMinimal {
+    #[serde_as(as = "SerdeAs")]
     pub alpha: StepField,
+    #[serde_as(as = "SerdeAs")]
     pub beta: StepField,
+    #[serde_as(as = "SerdeAs")]
     pub gamma: StepField,
+    #[serde_as(as = "SerdeAs")]
     pub zeta: StepField,
 }
 
 /// `branch_data` — the proofs-verified prefix mask (CONSTANT `to_bool_vec`
 /// encoding: N0 = `[F,F]`, N1 = `[F,T]`, N2 = `[T,T]`) plus the step domain
 /// log2.
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchData {
+    #[serde_as(as = "SerdeAs")]
     pub domain_log2: StepField,
     pub proofs_verified_mask: [bool; 2],
 }
 
 /// `prev_evals` — the previous (step) proof's evaluations, natively chunked
 /// (one `zeta`/`zeta_omega` per num_chunks).
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkedAllEvals {
+    #[serde_as(as = "SerdeAs")]
     pub ft_eval1: StepField,
     /// public-input poly eval — a single chunk (flat `[zeta, omega]`).
     pub public_evals: PointEvaluations<Vec<StepField>>,
@@ -162,20 +174,29 @@ impl Verifier {
 /// come straight from the wire; the 3 recomputed ones
 /// (`old_bulletproof_challenges` + the two message digests) are produced by
 /// the conversion.
+#[serde_as]
+#[derive(Serialize, Deserialize)]
 pub struct VerifiableProof {
     pub wrap_proof: WrapProof,
     pub raw_plonk: PlonkMinimal,
     /// the proof's own 16-round raw (pre-endo) bp challenges.
+    #[serde_as(as = "[SerdeAs; STEP_IPA_ROUNDS]")]
     pub raw_bulletproof_challenges: [StepField; STEP_IPA_ROUNDS],
     pub branch_data: BranchData,
+    #[serde_as(as = "SerdeAs")]
     pub sponge_digest_before_evaluations: StepField,
     pub prev_evals: ChunkedAllEvals,
+    #[serde_as(as = "Vec<SerdeAs>")]
     pub p_eval0_chunks: Vec<StepField>,
     /// previous-proof bp challenges, ALREADY endo-expanded (length `mpv`).
+    #[serde_as(as = "Vec<[SerdeAs; STEP_IPA_ROUNDS]>")]
     pub old_bulletproof_challenges: Vec<[StepField; STEP_IPA_ROUNDS]>,
     /// the proof's own wrap challenge-polynomial commitment (`Vesta`).
+    #[serde_as(as = "SerdeAs")]
     pub challenge_polynomial_commitment: Vesta,
+    #[serde_as(as = "SerdeAs")]
     pub messages_for_next_step_proof_digest: StepField,
+    #[serde_as(as = "SerdeAs")]
     pub messages_for_next_wrap_proof_digest: WrapField,
     pub step_domain_log2: usize,
 }

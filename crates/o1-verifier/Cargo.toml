@@ -4,20 +4,24 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-o1-verifier-lib = { path = "../o1-verifier-lib" }
+# Guest dep: no_std + alloc only. We use the no_std `verify`, the no_std
+# `decode_verifier_blob`, and the `VerifiableProof` runtime input type.
+pickles-verifier = { path = "../pickles-verifier", default-features = false }
 sp1-zkvm = { workspace = true }
-rmp-serde = { version = "1", default-features = false }
-rand = { version = "0.8", default-features = false }
+# Needed for the `sp1` feature that routes Pasta Montgomery multiplication
+# through the SP1 zkVM `sys_bigint` precompile.
 mina-curves = { workspace = true, default-features = false }
 
 [features]
 default = []
 # Routes Pasta Fp/Fq Montgomery multiplication through the SP1 zkVM
-# sys_bigint precompile. Activated by o1-verifier-host's build.rs
-# during the guest sub-build (`cargo build --features sp1` on
-# o1-verifier), so the host workspace's mina-curves stays on the
-# derive-specialized arithmetic.
+# `sys_bigint` precompile. Activated by o1-verifier-host's build.rs during
+# the guest sub-build (`cargo build --features sp1` on o1-verifier).
 sp1 = ["mina-curves/sp1"]
 
 [build-dependencies]
-o1-verifier-lib = { path = "../o1-verifier-lib", features = ["std"] }
+# Build-script dep: full std build of pickles-verifier so we can call
+# `wire::parse_wrap_vk` + `serialize::encode_verifier_blob` on the host.
+pickles-verifier = { path = "../pickles-verifier" }
+mina-curves = { workspace = true }
+poly-commitment = { workspace = true }
