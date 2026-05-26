@@ -8,9 +8,7 @@
 //!
 //! The kimchi VK + proof reuse the upstream serde impls directly (same crate
 //! that produced the JSON). The Pickles skeleton uses the bespoke OCaml-yojson
-//! decode in [`OcamlProof::parse`], a faithful port of the PureScript
-//! `Test.Pickles.Sideload.Loader` argonaut decoders. Field/curve mapping
-//! (confirmed against the PS `StepField`/`WrapField`/`PallasG`):
+//! decode in [`OcamlProof::parse`]. Field/curve mapping:
 //!
 //!   * `StepField` = Tick = `Fp` (Vesta scalar / Pallas base)
 //!   * `WrapField` = Tock = `Fq` (Pallas scalar / Vesta base)
@@ -40,18 +38,17 @@ pub fn parse_wrap_proof(json: &str) -> serde_json::Result<WrapProof> {
     serde_json::from_str(json)
 }
 
-type R<T> = Result<T, String>;
 
 /// Little-endian bytes (zero-padded to the field byte size) → field, via the
 /// o1-utils checked deserializer (`FieldHelpers::from_bytes`).
-fn field_from_le<F: PrimeField>(mut le: Vec<u8>) -> R<F> {
+fn field_from_le<F: PrimeField>(mut le: Vec<u8>) -> Result<F, String> {
     le.resize(F::size_in_bytes(), 0);
     F::from_bytes(&le).map_err(|e| alloc::format!("field deserialize: {e:?}"))
 }
 
 /// A big-endian `0x`-hex field element (OCaml `Field.to_yojson` form). o1-utils
 /// is little-endian + checked, so reverse the decoded bytes before handing off.
-pub fn parse_field_be_hex<F: PrimeField>(s: &str) -> R<F> {
+pub fn parse_field_be_hex<F: PrimeField>(s: &str) -> Result<F, String> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     let mut bytes = hex::decode(s).map_err(|e| e.to_string())?;
     bytes.reverse();
@@ -59,7 +56,7 @@ pub fn parse_field_be_hex<F: PrimeField>(s: &str) -> R<F> {
 }
 
 /// Parse `app_statement.json` (a JSON string `"0x…"`) into the step field.
-pub fn parse_app_statement(json: &str) -> R<StepField> {
+pub fn parse_app_statement(json: &str) -> Result<StepField, String> {
     let s: String = serde_json::from_str(json).map_err(|e| e.to_string())?;
     parse_field_be_hex(&s)
 }
@@ -69,7 +66,7 @@ pub fn parse_app_statement(json: &str) -> R<StepField> {
 // ---------------------------------------------------------------------------
 
 /// Typed parse of the OCaml `proof_state` + `prev_evals` skeleton. Mirrors the
-/// PS `OcamlProofWire`; the shared field/eval sub-types live in [`crate::types`].
+/// The shared field/eval sub-types live in [`crate::types`].
 /// The prev-proof arrays are length `mpv` (0/1/2).
 #[derive(Debug, Clone)]
 pub struct OcamlProof {
@@ -90,24 +87,24 @@ pub struct OcamlProof {
     pub prev_wrap_chals_raw: Vec<[WrapField; WRAP_IPA_ROUNDS]>,
 }
 
-fn field<'a>(v: &'a Value, k: &str) -> R<&'a Value> {
+fn field<'a>(v: &'a Value, k: &str) -> Result<&'a Value, String> {
     v.get(k).ok_or_else(|| alloc::format!("missing key `{k}`"))
 }
-fn arr(v: &Value) -> R<&Value> {
+fn arr(v: &Value) -> Result<&Value, String> {
     if v.is_array() {
         Ok(v)
     } else {
         Err("expected array".to_string())
     }
 }
-fn as_vec(v: &Value) -> R<&Vec<Value>> {
+fn as_vec(v: &Value) -> Result<&Vec<Value>, String> {
     v.as_array().ok_or_else(|| "expected array".to_string())
 }
 
 /// Combine little-endian signed-int64 `Hex64` limbs into a field element.
 /// OCaml-yojson emits each 64-bit limb as a (possibly negative) JSON int64;
 /// `as i64 as u64` reinterprets the two's-complement bits.
-fn combine_limbs_le<F: PrimeField>(limbs: &[Value]) -> R<F> {
+fn combine_limbs_le<F: PrimeField>(limbs: &[Value]) -> Result<F, String> {
     let mut le = Vec::with_capacity(limbs.len() * 8);
     for l in limbs {
         let v = l.as_i64().ok_or_else(|| "limb: not an int64".to_string())? as u64;
@@ -119,7 +116,7 @@ fn combine_limbs_le<F: PrimeField>(limbs: &[Value]) -> R<F> {
 /// A scalar/raw challenge: either `[int64, int64]` (raw `Challenge`) or
 /// `{ "inner": [int64, int64] }` (`Scalar_challenge`). The raw 128-bit value
 /// as a field (endo expansion happens at verify time).
-fn challenge<F: PrimeField>(v: &Value) -> R<F> {
+fn challenge<F: PrimeField>(v: &Value) -> Result<F, String> {
     let limbs = match v.as_array() {
         Some(a) => a,
         None => field(v, "inner")?
@@ -129,7 +126,7 @@ fn challenge<F: PrimeField>(v: &Value) -> R<F> {
     combine_limbs_le(limbs)
 }
 
-fn be_hex<F: PrimeField>(v: &Value) -> R<F> {
+fn be_hex<F: PrimeField>(v: &Value) -> Result<F, String> {
     let s = v
         .as_str()
         .ok_or_else(|| "expected 0x-hex string".to_string())?;
@@ -137,7 +134,7 @@ fn be_hex<F: PrimeField>(v: &Value) -> R<F> {
 }
 
 /// `[x_hex, y_hex]` → an affine point (caller picks the curve via `mk`).
-fn affine<C, F: PrimeField>(v: &Value, mk: impl Fn(F, F) -> C) -> R<C> {
+fn affine<C, F: PrimeField>(v: &Value, mk: impl Fn(F, F) -> C) -> Result<C, String> {
     let a = as_vec(v)?;
     if a.len() != 2 {
         return Err(alloc::format!("affine: expected [x, y], got {}", a.len()));
@@ -146,7 +143,7 @@ fn affine<C, F: PrimeField>(v: &Value, mk: impl Fn(F, F) -> C) -> R<C> {
 }
 
 /// `["N0"|"N1"|"N2"]` → the CONSTANT `to_bool_vec` mask.
-fn proofs_verified_mask(v: &Value) -> R<[bool; 2]> {
+fn proofs_verified_mask(v: &Value) -> Result<[bool; 2], String> {
     let a = as_vec(v)?;
     let tag = a
         .first()
@@ -163,7 +160,7 @@ fn proofs_verified_mask(v: &Value) -> R<[bool; 2]> {
 }
 
 /// OCaml `Hex64` single byte (= `domain_log2`) is a 1-char string.
-fn ocaml_byte(v: &Value) -> R<u8> {
+fn ocaml_byte(v: &Value) -> Result<u8, String> {
     let s = v
         .as_str()
         .ok_or_else(|| "domain_log2: expected string".to_string())?;
@@ -173,7 +170,7 @@ fn ocaml_byte(v: &Value) -> R<u8> {
         .ok_or_else(|| "domain_log2: empty string".to_string())
 }
 
-fn bulletproof_vec<F: PrimeField, const N: usize>(v: &Value) -> R<[F; N]> {
+fn bulletproof_vec<F: PrimeField, const N: usize>(v: &Value) -> Result<[F; N], String> {
     let a = as_vec(v)?;
     if a.len() != N {
         return Err(alloc::format!(
@@ -190,7 +187,7 @@ fn bulletproof_vec<F: PrimeField, const N: usize>(v: &Value) -> R<[F; N]> {
 }
 
 /// Flat public-input eval `[zeta_hex, omega_hex]` → a 1-chunk PointEvaluations.
-fn point_eval_flat(v: &Value) -> R<PointEvaluations<Vec<StepField>>> {
+fn point_eval_flat(v: &Value) -> Result<PointEvaluations<Vec<StepField>>, String> {
     let a = as_vec(v)?;
     if a.len() != 2 {
         return Err("public_input: expected [zeta, omega]".to_string());
@@ -202,20 +199,20 @@ fn point_eval_flat(v: &Value) -> R<PointEvaluations<Vec<StepField>>> {
 }
 
 /// Chunked eval `[[zeta_chunks…], [omega_chunks…]]` → PointEvaluations of vecs.
-fn point_eval_chunked(v: &Value) -> R<PointEvaluations<Vec<StepField>>> {
+fn point_eval_chunked(v: &Value) -> Result<PointEvaluations<Vec<StepField>>, String> {
     let a = as_vec(v)?;
     if a.len() != 2 {
         return Err("chunked eval: expected [zeta_chunks, omega_chunks]".to_string());
     }
-    let zeta = as_vec(&a[0])?.iter().map(be_hex).collect::<R<Vec<_>>>()?;
-    let zeta_omega = as_vec(&a[1])?.iter().map(be_hex).collect::<R<Vec<_>>>()?;
+    let zeta = as_vec(&a[0])?.iter().map(be_hex).collect::<Result<Vec<_>, String>>()?;
+    let zeta_omega = as_vec(&a[1])?.iter().map(be_hex).collect::<Result<Vec<_>, String>>()?;
     if zeta.len() != zeta_omega.len() {
         return Err("chunked eval: zeta/omega chunk count mismatch".to_string());
     }
     Ok(PointEvaluations { zeta, zeta_omega })
 }
 
-fn fixed_chunked<const N: usize>(v: &Value) -> R<[PointEvaluations<Vec<StepField>>; N]> {
+fn fixed_chunked<const N: usize>(v: &Value) -> Result<[PointEvaluations<Vec<StepField>>; N], String> {
     let a = as_vec(v)?;
     if a.len() != N {
         return Err(alloc::format!(
@@ -223,12 +220,12 @@ fn fixed_chunked<const N: usize>(v: &Value) -> R<[PointEvaluations<Vec<StepField
             a.len()
         ));
     }
-    let out = a.iter().map(point_eval_chunked).collect::<R<Vec<_>>>()?;
+    let out = a.iter().map(point_eval_chunked).collect::<Result<Vec<_>, String>>()?;
     out.try_into()
         .map_err(|_| "evals: length invariant".to_string())
 }
 
-fn parse_all_evals(v: &Value) -> R<ChunkedAllEvals> {
+fn parse_all_evals(v: &Value) -> Result<ChunkedAllEvals, String> {
     let ft_eval1 = be_hex(field(v, "ft_eval1")?)?;
     let evals_obj = field(v, "evals")?;
     let public_evals = point_eval_flat(field(evals_obj, "public_input")?)?;
@@ -261,7 +258,7 @@ fn parse_all_evals(v: &Value) -> R<ChunkedAllEvals> {
 
 impl OcamlProof {
     /// Decode `public_input_skeleton.json`.
-    pub fn parse(json: &str) -> R<OcamlProof> {
+    pub fn parse(json: &str) -> Result<OcamlProof, String> {
         let root: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
 
         let statement = field(&root, "statement")?;
@@ -303,15 +300,15 @@ impl OcamlProof {
         let prev_step_sgs = as_vec(field(msg_step, "challenge_polynomial_commitments")?)?
             .iter()
             .map(|p| affine::<Pallas, StepField>(p, Pallas::new_unchecked))
-            .collect::<R<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
         let prev_step_chals_raw = as_vec(field(msg_step, "old_bulletproof_challenges")?)?
             .iter()
             .map(bulletproof_vec::<StepField, STEP_IPA_ROUNDS>)
-            .collect::<R<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
         let prev_wrap_chals_raw = as_vec(field(msg_wrap, "old_bulletproof_challenges")?)?
             .iter()
             .map(bulletproof_vec::<WrapField, WRAP_IPA_ROUNDS>)
-            .collect::<R<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
 
         let prev_evals = parse_all_evals(field(&root, "prev_evals")?)?;
         let p_eval0_chunks = prev_evals.public_evals.zeta.clone();

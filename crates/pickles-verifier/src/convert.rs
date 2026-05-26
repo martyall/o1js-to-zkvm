@@ -1,24 +1,22 @@
 //! Host-side conversion (`std`): parsed OCaml fixture wire data → the no_std
-//! verifier types. Faithful port of the PureScript `Test.Pickles.Sideload.Loader`
-//! (`ocamlProofWireToVerifiable` + the `loadFixture` digest/expansion assembly)
-//! and `Pickles.Verify.mkVerifier`.
+//! verifier types.
 //!
-//! Conversion runs host-side, so it allocates freely and pulls in `std`-only
-//! primitives (kimchi domain/shifts, mina-poseidon, blake2s). Its output — the
+//! Runs host-side so it allocates freely and uses `std`-only primitives
+//! (kimchi domain/shifts, mina-poseidon, blake2s). Its output —
 //! [`Verifier`] / [`VerifiableProof`] — is what the `no_std` verifier consumes.
 //!
-//! Every primitive is reused from the upstream proof-systems crates:
-//!   * `ScalarChallenge::to_field` (mina-poseidon) — the endo expansion that PS
-//!     calls `toFieldPure` (Halo §6.2, 128-bit challenge → effective scalar).
-//!   * `poly_commitment::ipa::endos` — the scalar endo coefficients
-//!     (`stepEndo` / `wrapEndo`).
-//!   * `ArithmeticSponge<_, PlonkSpongeConstantsKimchi>` (mina-poseidon) — the
-//!     Mina Poseidon `hash` (`Random_oracle.hash`: zero init, absorb, squeeze).
-//!   * kimchi `Radix2EvaluationDomain` + `permutation::Shifts` — the step
-//!     domain generator + permutation shifts.
+//! Every primitive is reused from upstream proof-systems crates:
+//!   * `ScalarChallenge::to_field` — the endo expansion of a 128-bit challenge
+//!     (Halo §6.2) to an effective scalar.
+//!   * `poly_commitment::ipa::endos` — scalar endo coefficients.
+//!   * `ArithmeticSponge<_, PlonkSpongeConstantsKimchi>` — Mina Poseidon
+//!     `Random_oracle.hash` (zero init, absorb, squeeze).
+//!   * kimchi `Radix2EvaluationDomain` + `permutation::Shifts` — step domain
+//!     generator + permutation shifts.
 
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
@@ -39,35 +37,32 @@ use crate::types::{
 };
 use crate::wire::OcamlProof;
 
-type R<T> = Result<T, String>;
-
 /// `Wrap_hack.Padded_length.n` — the message-for-next-wrap challenge vector is
-/// front-padded with dummies up to this length (`wrap_hack.ml`).
+/// front-padded with dummies up to this length.
 const PADDED_LENGTH: usize = 2;
 
 // ---------------------------------------------------------------------------
-// 128-bit challenge endo expansion (`toFieldPure`).
+// 128-bit challenge endo expansion.
 // ---------------------------------------------------------------------------
 
 /// Expand a raw 128-bit challenge (already a field element < 2^128) to its
-/// effective scalar via the curve endomorphism — PS `toFieldPure c endo`.
+/// effective scalar via the curve endomorphism (Halo §6.2).
 fn expand<F: ark_ff::PrimeField>(raw: F, endo: &F) -> F {
     ScalarChallenge::new(raw).to_field(endo)
 }
 
 // ---------------------------------------------------------------------------
-// Wrap VK → step-hash field absorption order (`extractWrapVKForStepHash @1`).
+// Wrap VK → step-hash field absorption order.
 // ---------------------------------------------------------------------------
 
-/// The wrap VK commitment coordinates, in the order
+/// The wrap VK commitment coordinates in the order
 /// `Common.hash_messages_for_next_step_proof` absorbs them: `sigma[0..6]`,
 /// `coefficients[0..14]`, then `generic, psm, complete_add, mul, emul,
 /// endomul_scalar` — each commitment's chunk-0 `(x, y)`.
 ///
-/// The wrap VK is fixed to one chunk per commitment (`num_chunks_by_default = 1`,
-/// `step_main.ml:347`). Coords are Pallas base = Fp = `StepField` (no cross-field
-/// cast — the PS `vesta*` naming labels the scalar field, not the coordinate one).
-fn wrap_vk_step_fields(vk: &WrapVerifierIndex) -> R<Vec<StepField>> {
+/// The wrap VK is fixed to one chunk per commitment (`num_chunks_by_default = 1`).
+/// Coords are Pallas base = Fp = `StepField` (no cross-field cast).
+fn wrap_vk_step_fields(vk: &WrapVerifierIndex) -> Result<Vec<StepField>, String> {
     let index_comms = [
         &vk.generic_comm,
         &vk.psm_comm,
@@ -93,12 +88,12 @@ fn wrap_vk_step_fields(vk: &WrapVerifierIndex) -> R<Vec<StepField>> {
 }
 
 // ---------------------------------------------------------------------------
-// Dummy IPA wrap challenges (`Pickles.Dummy.dummyIpaChallenges.wrapExpanded`).
+// Dummy IPA wrap challenges.
 // ---------------------------------------------------------------------------
 
 /// The 15 dummy wrap IPA challenges, endo-expanded — port of OCaml
-/// `Dummy.Ipa.Wrap.challenges` (`ro.ml`). Each raw challenge `chal_i` is the low
-/// 128 bits (LE) of `blake2s256("chal_i")`; the `Ro` monad draws them in
+/// `Dummy.Ipa.Wrap.challenges` (`ro.ml`). Each raw challenge `chal_i` is the
+/// low 128 bits (LE) of `blake2s256("chal_i")`; the `Ro` monad draws them in
 /// counter order `1..=15` and stores them reversed (`Vector.init` evaluates
 /// right-to-left), so the result is indexed `[chal_15, …, chal_1]`.
 fn dummy_ipa_wrap_expanded(wrap_endo: &WrapField) -> [WrapField; WRAP_IPA_ROUNDS] {
@@ -136,7 +131,6 @@ fn hash_messages_for_next_step(
         inputs.push(sg.y);
         inputs.extend_from_slice(chals);
     }
-    // Mina Poseidon `hash` (`Random_oracle.hash`: zero init, absorb, squeeze).
     let mut sponge: ArithmeticSponge<StepField, PlonkSpongeConstantsKimchi, FULL_ROUNDS> =
         Sponge::new(fp_kimchi::static_params());
     sponge.absorb(&inputs);
@@ -156,7 +150,6 @@ fn hash_messages_for_next_wrap(
     }
     inputs.push(cpc.x);
     inputs.push(cpc.y);
-    // Mina Poseidon `hash` (`Random_oracle.hash`: zero init, absorb, squeeze).
     let mut sponge: ArithmeticSponge<WrapField, PlonkSpongeConstantsKimchi, FULL_ROUNDS> =
         Sponge::new(fq_kimchi::static_params());
     sponge.absorb(&inputs);
@@ -168,42 +161,36 @@ fn hash_messages_for_next_wrap(
 // ---------------------------------------------------------------------------
 
 impl Verifier {
-    /// Build the per-tag verifier (PS `mkVerifier`). The step domain generator
-    /// and permutation shifts are derived from `step_domain_log2`; `step_zk_rows`
-    /// from `num_chunks` (`(16·nc + 5) / 7`); the step SRS length log2 is the
-    /// protocol-fixed `STEP_IPA_ROUNDS`; the linearization is the Tick polynomial
-    /// specialized to the step circuit's (all-off) feature flags, so it is
-    /// `SkipIf`-free and kimchi's `PolishToken::evaluate` consumes it directly.
-    /// (Same `ft_eval0` as `pickles-codegen`'s `None` linearization, which keeps
-    /// `SkipIf` tokens for a feature-aware interpreter — but kimchi's evaluator
-    /// has `FeatureFlag::is_enabled() = todo!()`, so a feature-gated linearization
-    /// would panic.) Fails only if `step_domain_log2` exceeds the field's
+    /// Build the per-tag verifier. The step domain generator and permutation
+    /// shifts are derived from `step_domain_log2`; `step_zk_rows` from
+    /// `num_chunks` (`(16·nc + 5) / 7`); the step SRS length log2 is the
+    /// protocol-fixed [`STEP_IPA_ROUNDS`]; the linearization is the Tick
+    /// polynomial specialized to the step circuit's (all-off) feature flags,
+    /// so it is `SkipIf`-free and kimchi's `PolishToken::evaluate` consumes it
+    /// directly. Fails only if `step_domain_log2` exceeds the field's
     /// two-adicity (unreachable for valid step circuits).
     ///
-    /// `wrap_srs` is the Pallas SRS the wrap `VerifierIndex` carries (attached
-    /// here since the serde form `#[serde(skip)]`s it); the stage-3 kimchi
-    /// `batch_verify` needs it for the public-input commitment + opening proof.
-    /// Pass it as an `Arc` so a single SRS can back many tags / proofs.
+    /// `wrap_srs` and `vesta_srs` are passed as `Arc`s so one SRS per curve
+    /// can back many tags / proofs; `wrap_srs` is also stored on the wrap VK
+    /// (whose serde form `#[serde(skip)]`s the SRS).
     pub fn new(
         wrap_vk: WrapVerifierIndex,
-        wrap_srs: alloc::sync::Arc<WrapSrs>,
-        vesta_srs: VestaSrs,
+        wrap_srs: Arc<WrapSrs>,
+        vesta_srs: Arc<VestaSrs>,
         step_domain_log2: usize,
         step_num_chunks: usize,
-    ) -> R<Verifier> {
+    ) -> Result<Verifier, String> {
         let mut wrap_vk = wrap_vk;
         wrap_vk.srs = wrap_srs;
         // The serde form `#[serde(skip)]`s the wrap VK's `linearization`,
-        // `powers_of_alpha` AND `endo`; rebuild all three for the wrap
-        // (Pallas / Fq) circuit (features off, like the step circuit) so stage-3's
-        // `batch_verify` has the `Permutation` alphas registered and `ft_eval0`'s
-        // `Constants.endo_coefficient` is correct. The endo is the Vesta *base*
-        // endo (`endos::<Vesta>().0`) — matching kimchi's OCaml stub
-        // `pasta_fq_plonk_verifier_index` — NOT the deserialized default (zero),
-        // which would zero out the endomul-gate terms in the linearization. The
-        // lazy `OnceCell`s (`w`, `permutation_vanishing_polynomial_m`) recompute
-        // correctly for the nc=1 wrap circuit (zk_rows = 3, where the 3-factor and
-        // n-factor forms agree).
+        // `powers_of_alpha` AND `endo`; rebuild all three (features off, like
+        // the step circuit). The endo is the Vesta *base* endo
+        // (`endos::<Vesta>().0`, matching kimchi's `pasta_fq_plonk_verifier_index`
+        // OCaml stub), NOT the deserialized default (zero), which would zero
+        // out the endomul-gate terms in `ft_eval0`. The lazy `OnceCell`s (`w`,
+        // `permutation_vanishing_polynomial_m`) recompute correctly for the
+        // nc=1 wrap circuit (zk_rows = 3, where the 3-factor and n-factor
+        // perm-vanishing forms agree).
         let (wrap_lin, wrap_alphas) =
             expr_linearization::<WrapField>(Some(&FeatureFlags::default()), true);
         wrap_vk.linearization = wrap_lin;
@@ -212,11 +199,11 @@ impl Verifier {
         let domain = Radix2EvaluationDomain::<StepField>::new(1usize << step_domain_log2)
             .ok_or_else(|| format!("no radix-2 domain of size 2^{step_domain_log2}"))?;
         let step_shifts: [StepField; 7] = *Shifts::new(&domain).shifts();
-        // Step feature flags are all-off (no lookups / range-check / etc. in
-        // mina's step circuits), so `Some(default)` yields a `SkipIf`-free
-        // linearization that kimchi's evaluator can run. The `Alphas` map is
-        // kept (not dropped): stage 1's `ft_eval0` + `derive_plonk` permutation
-        // term need the instantiated `Permutation` alphas.
+        // Step feature flags are all-off, so `Some(default)` yields a
+        // `SkipIf`-free linearization (kimchi's evaluator panics on `SkipIf`).
+        // The `Alphas` map is kept (not dropped): stage 1's `ft_eval0` +
+        // `derive_plonk` permutation term need the instantiated `Permutation`
+        // alphas.
         let (linearization, powers_of_alpha) =
             expr_linearization::<StepField>(Some(&FeatureFlags::default()), true);
         Ok(Verifier {
@@ -235,37 +222,39 @@ impl Verifier {
 }
 
 impl OcamlProof {
-    /// Consume the parsed wire skeleton into a canonical [`VerifiableProof`] (PS
-    /// `ocamlProofWireToVerifiable` + the `loadFixture` digest/expansion step):
+    /// Consume the parsed wire skeleton into a canonical [`VerifiableProof`]:
     ///   * carry the 9 fields straight from the wire,
-    ///   * endo-expand the prev step bp challenges into `old_bulletproof_challenges`,
+    ///   * endo-expand the prev step bp challenges into
+    ///     `old_bulletproof_challenges`,
     ///   * recompute the two message digests (the wire erases them).
     ///
     /// The kimchi wrap proof + VK come from the sibling `proof.serde.json` /
-    /// `vk.serde.json`. `app_state` is the application statement's field encoding
-    /// (OCaml `Statement_value.to_field_elements`); for the single-field fixture
-    /// statements it is `[statement]`.
+    /// `vk.serde.json`. `app_state` is the application statement's field
+    /// encoding (OCaml `Statement_value.to_field_elements`); for the
+    /// single-field fixture statements it is `[statement]`.
     pub fn into_verifiable(
         self,
         wrap_proof: WrapProof,
         wrap_vk: &WrapVerifierIndex,
         app_state: &[StepField],
-    ) -> R<VerifiableProof> {
-        // Scalar endo coefficients (`endoScalar`): `endos::<G>() = (base, scalar)`,
-        // take the scalar `.1`. Step = `endos::<Vesta>().1` (Fp = `stepEndo`),
-        // wrap = `endos::<Pallas>().1` (Fq = `wrapEndo`).
+    ) -> Result<VerifiableProof, String> {
+        // Scalar endo coefficients: `endos::<G>() = (base, scalar)`, take the
+        // scalar `.1`. Step = `endos::<Vesta>().1` (Fp), wrap =
+        // `endos::<Pallas>().1` (Fq).
         let step_endo = endos::<Vesta>().1;
         let wrap_endo = endos::<Pallas>().1;
 
         // Prev step bp challenges, endo-expanded (16-round) — these double as
-        // `old_bulletproof_challenges` and as the per-proof challenges in msgStep.
+        // `old_bulletproof_challenges` and as the per-proof challenges in the
+        // step-message digest.
         let old_bulletproof_challenges: Vec<[StepField; STEP_IPA_ROUNDS]> = self
             .prev_step_chals_raw
             .iter()
             .map(|&chals| chals.map(|c| expand(c, &step_endo)))
             .collect();
 
-        // Prev wrap bp challenges, endo-expanded (15-round) — for the wrap digest.
+        // Prev wrap bp challenges, endo-expanded (15-round) — for the wrap
+        // digest.
         let prev_wrap_expanded: Vec<[WrapField; WRAP_IPA_ROUNDS]> = self
             .prev_wrap_chals_raw
             .iter()
@@ -283,8 +272,8 @@ impl OcamlProof {
         let messages_for_next_step_proof_digest =
             hash_messages_for_next_step(&vk_fields, app_state, &step_proofs);
 
-        // messages_for_next_wrap_proof digest — front-pad to PADDED_LENGTH with
-        // dummy wrap challenges (`Wrap_hack.pad_challenges`).
+        // messages_for_next_wrap_proof digest — front-pad to `PADDED_LENGTH`
+        // with dummy wrap challenges (`Wrap_hack.pad_challenges`).
         let mpv = prev_wrap_expanded.len();
         if mpv > PADDED_LENGTH {
             return Err(format!(
@@ -321,10 +310,10 @@ mod tests {
     use crate::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk};
     use ark_ff::Zero;
 
-    /// Parse a fixture directory's four files, run `into_verifiable`, and assert
-    /// the structural invariants the conversion must hold. Byte-exact digest
-    /// correctness is validated transitively by the Step-3 verify tests (a wrong
-    /// digest → wrong wrap public input → kimchi check fails).
+    /// Parse a fixture directory's four files, run `into_verifiable`, and
+    /// assert the structural invariants the conversion must hold. Byte-exact
+    /// digest correctness is validated transitively by `verify_accepts_fixtures`
+    /// (a wrong digest → wrong wrap public input → kimchi check fails).
     fn convert(dir: &str, mpv: usize) -> VerifiableProof {
         let base = format!("{}/../../fixtures/{dir}", env!("CARGO_MANIFEST_DIR"));
         let read = |file: &str| {

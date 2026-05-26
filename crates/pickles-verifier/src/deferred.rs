@@ -1,25 +1,24 @@
 //! Stage 1 of the out-of-circuit Pickles verifier: expand the wrap proof's
-//! carried minimal skeleton into the full deferred values. Port of the
-//! PureScript `Pickles.Prove.Pure.Verify.expandDeferredForVerify` (itself a port
-//! of OCaml `Wrap_deferred_values.expand_deferred`).
+//! carried minimal skeleton into the full deferred values.
 //!
 //! The heavy lifting — replaying the inner step proof's Fr-sponge to recover
 //! `xi`/`r`, and computing `ft_eval0` via the linearization interpreter — is
-//! delegated to kimchi's [`oracles_from_digest`] (the extracted post-digest tail
-//! of `ProverProof::oracles`). The pickles-specific glue layered on top:
+//! delegated to kimchi's [`oracles_from_digest`] (the extracted post-digest
+//! tail of `ProverProof::oracles`). The pickles-specific glue layered on top:
 //!
-//!   * **combined inner product** — base-column CIP via the `combined_inner_product`
-//!     leaf (features off ⇒ no optional-gate/lookup columns);
+//!   * **combined inner product** — base-column CIP via the
+//!     `combined_inner_product` leaf (features off ⇒ no optional-gate/lookup
+//!     columns);
 //!   * **`derive_plonk`** — the Type1 plonk scalars (`perm` via
 //!     `ConstraintSystem::perm_scalars`, `zeta_to_domain_size`,
 //!     `zeta_to_srs_length`);
 //!   * **bulletproof challenges + b** — endo-expand the raw prechallenges and
 //!     evaluate `b_poly(zeta) + r·b_poly(zetaw)`.
 //!
-//! Output is [`ExpandedDeferredValues`], the RAW (pre-Type1-shift, pre-cross-field)
-//! scalar values. The Type1 shift + cross-field reinterpretation + flattening
-//! into the wrap kimchi public input (PS `assembleWrapMainInput`) is the next
-//! stage (the bridge to the stage-3 dlog check) and is NOT done here.
+//! Output is [`ExpandedDeferredValues`], the RAW (pre-Type1-shift,
+//! pre-cross-field) scalar values. The Type1 shift, cross-field
+//! reinterpretation, and flattening into the wrap kimchi public input is the
+//! next stage (the bridge to the stage-3 dlog check) and is NOT done here.
 
 use alloc::vec::Vec;
 
@@ -44,11 +43,12 @@ use crate::types::{BranchData, ChunkedAllEvals, StepField, VerifiableProof, Veri
 /// from `Vesta::sponge_params()`.
 type StepFrSponge = DefaultFrSponge<StepField, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
-/// The expanded wrap deferred values (RAW scalars, pre-Type1-shift). Mirrors the
-/// subset of PS `WrapDeferredValuesOutput` that `assembleWrapMainInput` reads.
+/// The expanded wrap deferred values (RAW scalars, pre-Type1-shift) — the
+/// subset of the wrap `DeferredValuesOutput` consumed by the stage-1 → stage-3
+/// bridge.
 #[derive(Debug, Clone)]
 pub struct ExpandedDeferredValues {
-    // ----- plonk scalars (PS `derivePlonk` output) -----
+    // ----- plonk scalars (derived in `derive_plonk`) -----
     /// raw 128-bit `alpha` (carried, NOT endo-expanded).
     pub alpha: StepField,
     /// raw 128-bit `beta`.
@@ -130,8 +130,8 @@ fn to_proof_evaluations(e: &ChunkedAllEvals) -> ProofEvaluations<PointEvaluation
 /// Panics only on a malformed step domain log2 (no radix-2 domain of that size),
 /// unreachable for valid step circuits.
 pub fn expand_deferred(verifier: &Verifier, proof: &VerifiableProof) -> ExpandedDeferredValues {
-    // The scalar endo (`endos::<Vesta>().1`) — used to endo-expand the 128-bit
-    // challenges via `ScalarChallenge::to_field` (PS `toFieldPure`).
+    // The scalar endo (`endos::<Vesta>().1`) — used to endo-expand the
+    // 128-bit challenges via `ScalarChallenge::to_field`.
     let endo = verifier.step_endo;
     // The gate (base) endo — `ft_eval0`'s `Constants.endo_coefficient` for the
     // endomul gate constraints. The step (Vesta) VK uses `endos::<Pallas>().0`
@@ -141,10 +141,9 @@ pub fn expand_deferred(verifier: &Verifier, proof: &VerifiableProof) -> Expanded
     // coefficients, two distinct uses.
     let gate_endo = endos::<Pallas>().0;
 
-    // The proof's OWN step domain (multi-branch compiled outputs share one
+    // The proof's OWN step domain: multi-branch compiled outputs share one
     // `Verifier` whose `step_domain_log2`/generator/shifts are the first
-    // branch's; re-expansion must use this proof's branch). PS `expandDv` derives
-    // generator/shifts from `vp.stepDomainLog2`.
+    // branch's, so re-expansion must use this proof's branch's domain.
     let domain_log2 = proof.step_domain_log2;
     let domain = Radix2EvaluationDomain::<StepField>::new(1usize << domain_log2)
         .unwrap_or_else(|| panic!("no radix-2 domain of size 2^{domain_log2}"));
@@ -153,10 +152,11 @@ pub fn expand_deferred(verifier: &Verifier, proof: &VerifiableProof) -> Expanded
     let zk_rows = verifier.step_zk_rows as u64;
     let shifts: [StepField; 7] = *permutation::Shifts::new(&domain).shifts();
 
-    // The step proof's evaluations + previous-recursion challenges. `comm` is
-    // never read by the Fr-sponge tail (`RecursionChallenge::evals` ignores it,
-    // and the CIP uses only the evaluation values), so a dummy commitment is
-    // sufficient here — the bp-polynomial *values* come from `chals`.
+    // The step proof's evaluations + previous-recursion challenges. The
+    // bp-polynomial values come from `chals`; the `comm` field is unused on
+    // this path (`RecursionChallenge::evals` ignores it, and the CIP reads
+    // only the evaluation values) but kimchi's type requires one — pass a
+    // dummy.
     let step_evals = to_proof_evaluations(&proof.prev_evals);
     let prev_challenges: Vec<RecursionChallenge<Vesta>> = proof
         .old_bulletproof_challenges
@@ -248,7 +248,7 @@ pub fn expand_deferred(verifier: &Verifier, proof: &VerifiableProof) -> Expanded
 
     // ----- derive_plonk (Type1 scalars) -----
     let collapsed = step_evals.combine(&powers_of_eval_points_for_chunks);
-    // PS `derivePlonk` zk_polynomial: 3-factor product over the last zk rows,
+    // `derive_plonk` zk_polynomial: 3-factor product over the last zk rows,
     // evaluated at the endo-expanded zeta.
     let omega_inv = generator.inverse().expect("generator nonzero");
     let omega_to_minus_zk_rows = omega_inv.pow([zk_rows]);
@@ -300,22 +300,21 @@ pub fn expand_deferred(verifier: &Verifier, proof: &VerifiableProof) -> Expanded
 }
 
 // ---------------------------------------------------------------------------
-// Stage-1 → stage-3 bridge: assemble the wrap kimchi public input.
-// PS `Pickles.Verify.wrapPublicInputOf` → `assembleWrapMainInput`
-// → `Wrap.StatementPacked` `valueToFields`.
+// Stage-1 → stage-3 bridge: assemble the wrap kimchi public input
+// (`Wrap.StatementPacked.value_to_fields`).
 // ---------------------------------------------------------------------------
 
 /// Reinterpret a step-field element's canonical integer in the wrap field
-/// (mod-reducing). PS `crossFieldDigest` / `fromBigInt ∘ toBigInt`. Exact for
-/// the values it is used on here — digests and 128-bit challenges, all `<` both
+/// (mod-reducing). Exact for the values it is used on here — digests and
+/// 128-bit challenges, all `<` both
 /// Pasta moduli — and the post-shift representative in the Type1 conversion.
 fn fp_to_fq(x: StepField) -> WrapField {
     WrapField::from_le_bytes_mod_order(&x.into_bigint().to_bytes_le())
 }
 
 /// Cross-field Type1 of a RAW (unshifted) step-field scalar, as the wrap
-/// statement stores it. PS `crossFieldType1Step` = `toShifted (fromShifted t)`:
-/// `fromShifted` un-shifts the stored same-field `Type1`, recovering the raw
+/// statement stores it: applying `to_shifted (from_shifted t)` un-shifts the
+/// stored same-field `Type1`, recovering the raw
 /// value, then the cross-field `toShifted` reshifts. We store raw, so we apply
 /// the cross-field `toShifted` directly: compute `(raw − (2^255+1)) / 2` in the
 /// STEP field, then reinterpret that integer in the wrap field
@@ -327,7 +326,7 @@ fn cross_field_type1(raw: StepField) -> WrapField {
     fp_to_fq((raw - c) * scale)
 }
 
-/// `Branch_data.pack` (PS `packBranchDataWrap`): `4·domain_log2 + m0 + 2·m1`.
+/// `Branch_data.pack`: `4·domain_log2 + m0 + 2·m1`.
 fn pack_branch_data(bd: &BranchData) -> WrapField {
     let bit = |b: bool| {
         if b {
