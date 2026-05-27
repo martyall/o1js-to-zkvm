@@ -12,9 +12,14 @@ set -euo pipefail
 
 export TRACE_FILE=${TRACE_FILE:-$(pwd)/trace.json}
 export TRACE_SAMPLE_RATE=${TRACE_SAMPLE_RATE:-100000}
+# Make sure make build-rust enables the host crate's `profiling` feature
+# (forwards to sp1-sdk/profiling). The make target sets this already; we
+# re-export here in case the script is invoked directly.
+export CARGO_FEATURES=${CARGO_FEATURES:-profiling}
 
 echo "==> Profiling enabled"
 echo "    TRACE_FILE=$TRACE_FILE"
 echo "    TRACE_SAMPLE_RATE=$TRACE_SAMPLE_RATE"
+echo "    CARGO_FEATURES=$CARGO_FEATURES"
 
 exec ./scripts/rust-e2e-test.sh
