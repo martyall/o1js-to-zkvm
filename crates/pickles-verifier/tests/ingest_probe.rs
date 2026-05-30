@@ -49,11 +49,10 @@ fn structural_check(network_dir: &str, expected_mpv: usize) {
     let bytes = std::fs::read(dir.join("proof.bin_prot")).expect("read proof");
     let parsed = decode_bytes(&bytes).expect("bin_prot decode");
 
-    // Confirm the wrap-proof builder is the still-open piece.
-    assert!(
-        to_wrap_proof(&parsed.0).is_err(),
-        "wrap-proof builder is the open M3 piece; should error until filled in"
-    );
+    // Wrap-proof builder is implemented; both networks should produce a
+    // valid ProverProof structurally (verify is a separate concern that
+    // also needs the matching VK — see `ingest_verify::verify_mainnet_tip`).
+    to_wrap_proof(&parsed.0).unwrap_or_else(|e| panic!("to_wrap_proof: {e}"));
 
     let st = &parsed.0.statement;
     let actual_mpv = st
