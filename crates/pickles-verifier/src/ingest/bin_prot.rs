@@ -22,14 +22,19 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use binprot::BinProtRead;
-use kimchi::proof::PointEvaluations;
+use kimchi::proof::{
+    PointEvaluations, ProofEvaluations, ProverCommitments, ProverProof, RecursionChallenge,
+};
 use mina_curves::pasta::{Pallas, Vesta};
 use mina_p2p_messages::v2::{
     MinaBaseProofStableV2, PicklesProofProofsVerified2ReprStableV2,
-    PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals,
+    PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals, PicklesWrapWireProofStableV1,
     PicklesReducedMessagesForNextProofOverSameFieldWrapChallengesVectorStableV2AChallenge,
 };
+use mina_poseidon::sponge::ScalarChallenge;
 use o1_utils::FieldHelpers;
+use poly_commitment::commitment::PolyComm;
+use poly_commitment::ipa::{endos, OpeningProof};
 
 use crate::types::{
     BranchData, ChunkedAllEvals, PlonkMinimal, StepField, VerifiableProof, WrapField,
@@ -330,20 +335,197 @@ fn to_chunked_all_evals(
 // Wrap kimchi ProverProof reconstruction (stub for M3 — to be filled in)
 // ---------------------------------------------------------------------------
 
-/// Build a kimchi `ProverProof<Pallas>` from a bin_prot
-/// `PicklesWrapWireProofStableV1`. This is the Rust analog of OCaml's
-/// `Wrap_wire_proof.to_kimchi_proof` — non-trivial: kimchi's `ProverProof`
-/// expects fully-fleshed `PolyComm`s, `ProofEvaluations`, an `OpeningProof`
-/// with `sg` set to the wrap CPC, etc.
-///
-/// TODO(M3-followup): wire this up. For now we return an error so callers can
-/// at least exercise the `ocaml_proof_from_bin_prot` path through tests.
+// ---------------------------------------------------------------------------
+// Wrap kimchi ProverProof reconstruction
+// ---------------------------------------------------------------------------
+
+/// `(BigInt, BigInt)` (x, y) → single-chunk `PolyComm<Pallas>`. Used for every
+/// commitment in `PicklesWrapWireProofStableV1` (w_comm, z_comm, t_comm).
+fn point_pair_to_polycomm(
+    p: &(mina_p2p_messages::bigint::BigInt, mina_p2p_messages::bigint::BigInt),
+) -> Result<PolyComm<Pallas>, ConvertError> {
+    Ok(PolyComm {
+        chunks: alloc::vec![point_to_pallas(p)?],
+    })
+}
+
+/// `(BigInt, BigInt)` → single-chunk `PointEvaluations<Vec<F>>`. The kimchi
+/// `evals` shape is chunked (Vec); a wrap proof has `nc = 1`, so one chunk.
+fn pair_to_point_eval(
+    p: &(mina_p2p_messages::bigint::BigInt, mina_p2p_messages::bigint::BigInt),
+) -> Result<PointEvaluations<alloc::vec::Vec<WrapField>>, ConvertError> {
+    Ok(PointEvaluations {
+        zeta: alloc::vec![bigint_to_field::<WrapField>(&p.0)?],
+        zeta_omega: alloc::vec![bigint_to_field::<WrapField>(&p.1)?],
+    })
+}
+
+/// `Pickles.Dummy.Ipa.Wrap.sg` — the protocol-fixed dummy Pallas point used to
+/// front-pad the prev-step CPC list to `PADDED_LENGTH = 2`. Derived
+/// deterministically the same way OCaml does
+/// (`Pickles.Common.dummy_sg_from_seed` over the "wrap" tag), but for the
+/// blockchain SNARK case `mpv = 2` so this dummy is never consumed — we only
+/// need it on paths with `mpv < 2`. Returning the curve identity is a safe
+/// placeholder for the `mpv = 2` path that doesn't tickle it; the `mpv < 2`
+/// path will need the actual constant (TODO when o1js fixtures arrive).
+fn dummy_wrap_sg() -> Pallas {
+    use ark_ec::AffineRepr;
+    Pallas::zero()
+}
+
+/// Reconstruct the wrap kimchi `ProverProof<Pallas>` from the bin_prot wire
+/// form. Direct field-by-field projection (no JSON round-trip): kimchi types
+/// are public and the wire layout is a 1:1 map after `BigInt → Fp/Fq` /
+/// `(BigInt, BigInt) → Pallas`.
 pub fn to_wrap_proof(
-    _p: &PicklesProofProofsVerified2ReprStableV2,
+    p: &PicklesProofProofsVerified2ReprStableV2,
 ) -> Result<WrapProof, ConvertError> {
-    Err(ConvertError::Field(
-        "to_wrap_proof: not yet implemented — bin_prot wrap proof reconstruction \
-         (kimchi ProverProof builder) is the remaining M3 piece"
-            .to_string(),
-    ))
+    let wp: &PicklesWrapWireProofStableV1 = &p.proof;
+
+    // ----- ProverCommitments
+    let mut w_comm = alloc::vec::Vec::with_capacity(15);
+    for pair in wp.commitments.w_comm.0.iter() {
+        w_comm.push(point_pair_to_polycomm(pair)?);
+    }
+    let w_comm: [PolyComm<Pallas>; 15] = w_comm
+        .try_into()
+        .map_err(|_| ConvertError::Field("w_comm length".to_string()))?;
+
+    let z_comm = point_pair_to_polycomm(&wp.commitments.z_comm)?;
+
+    // t_comm is a PaddedSeq of 7 commitments combined into ONE PolyComm with
+    // 7 chunks (kimchi's quotient polynomial is high-degree → multiple chunks).
+    let mut t_chunks = alloc::vec::Vec::with_capacity(7);
+    for pair in wp.commitments.t_comm.0.iter() {
+        t_chunks.push(point_to_pallas(pair)?);
+    }
+    let t_comm = PolyComm { chunks: t_chunks };
+
+    let commitments = ProverCommitments {
+        w_comm,
+        z_comm,
+        t_comm,
+        lookup: None,
+    };
+
+    // ----- OpeningProof (IPA)
+    let mut lr: alloc::vec::Vec<(Pallas, Pallas)> = alloc::vec::Vec::with_capacity(15);
+    for pair in wp.bulletproof.lr.as_ref() {
+        lr.push((point_to_pallas(&pair.0)?, point_to_pallas(&pair.1)?));
+    }
+    let delta = point_to_pallas(&wp.bulletproof.delta)?;
+    let z1 = bigint_to_field::<WrapField>(&wp.bulletproof.z_1)?;
+    let z2 = bigint_to_field::<WrapField>(&wp.bulletproof.z_2)?;
+    let sg = point_to_pallas(&wp.bulletproof.challenge_polynomial_commitment)?;
+
+    let opening = OpeningProof { lr, delta, z1, z2, sg };
+
+    // ----- ProofEvaluations
+    let ev = &wp.evaluations;
+    let mut w_evals = alloc::vec::Vec::with_capacity(15);
+    for pair in ev.w.0.iter() {
+        w_evals.push(pair_to_point_eval(pair)?);
+    }
+    let w_evals: [_; 15] = w_evals
+        .try_into()
+        .map_err(|_| ConvertError::Field("w evals length".to_string()))?;
+
+    let mut coeff_evals = alloc::vec::Vec::with_capacity(15);
+    for pair in ev.coefficients.0.iter() {
+        coeff_evals.push(pair_to_point_eval(pair)?);
+    }
+    let coeff_evals: [_; 15] = coeff_evals
+        .try_into()
+        .map_err(|_| ConvertError::Field("coefficient evals length".to_string()))?;
+
+    let z_eval = pair_to_point_eval(&ev.z)?;
+
+    let mut s_evals = alloc::vec::Vec::with_capacity(6);
+    for pair in ev.s.0.iter() {
+        s_evals.push(pair_to_point_eval(pair)?);
+    }
+    let s_evals: [_; 6] = s_evals
+        .try_into()
+        .map_err(|_| ConvertError::Field("s evals length".to_string()))?;
+
+    let evals = ProofEvaluations {
+        public: None,
+        w: w_evals,
+        z: z_eval,
+        s: s_evals,
+        coefficients: coeff_evals,
+        generic_selector: pair_to_point_eval(&ev.generic_selector)?,
+        poseidon_selector: pair_to_point_eval(&ev.poseidon_selector)?,
+        complete_add_selector: pair_to_point_eval(&ev.complete_add_selector)?,
+        mul_selector: pair_to_point_eval(&ev.mul_selector)?,
+        emul_selector: pair_to_point_eval(&ev.emul_selector)?,
+        endomul_scalar_selector: pair_to_point_eval(&ev.endomul_scalar_selector)?,
+        range_check0_selector: None,
+        range_check1_selector: None,
+        foreign_field_add_selector: None,
+        foreign_field_mul_selector: None,
+        xor_selector: None,
+        rot_selector: None,
+        lookup_aggregation: None,
+        lookup_table: None,
+        lookup_sorted: [None, None, None, None, None],
+        runtime_lookup_table: None,
+        runtime_lookup_table_selector: None,
+        xor_lookup_selector: None,
+        lookup_gate_lookup_selector: None,
+        range_check_lookup_selector: None,
+        foreign_field_mul_lookup_selector: None,
+    };
+
+    let ft_eval1 = bigint_to_field::<WrapField>(&wp.ft_eval1)?;
+
+    // ----- prev_challenges
+    //
+    // OCaml `fetch_blockchain_fixture.ml`'s `chal_polys` is exactly this:
+    // pad the step CPC list front to length 2 with `Dummy.Ipa.Wrap.sg`, zip
+    // with the (already len-2) prev wrap old bp challenges, and endo-expand
+    // each row's prechallenges. The resulting Vec<RecursionChallenge> is the
+    // wrap proof's `prev_challenges`.
+    let st = &p.statement;
+    let prev_step_sgs = &st.messages_for_next_step_proof.challenge_polynomial_commitments;
+    let prev_wrap_rows = &st
+        .proof_state
+        .messages_for_next_wrap_proof
+        .old_bulletproof_challenges
+        .0;
+    let mpv = prev_step_sgs.len();
+
+    // Front-pad sg list to length 2 with dummy.
+    let mut padded_sgs: alloc::vec::Vec<Pallas> = alloc::vec::Vec::with_capacity(2);
+    for _ in 0..(2_usize.saturating_sub(mpv)) {
+        padded_sgs.push(dummy_wrap_sg());
+    }
+    for p in prev_step_sgs.iter() {
+        padded_sgs.push(point_to_pallas(p)?);
+    }
+
+    let wrap_endo = endos::<Pallas>().1;
+    let mut prev_challenges: alloc::vec::Vec<RecursionChallenge<Pallas>> =
+        alloc::vec::Vec::with_capacity(2);
+    for (sg, chals) in padded_sgs.iter().copied().zip(prev_wrap_rows.iter()) {
+        // chals: PicklesReducedMessagesForNextProofOverSameFieldWrapChallengesVectorStableV2
+        // = PaddedSeq<A, 15>. Endo-expand each prechallenge into Fq.
+        let mut chal_vec: alloc::vec::Vec<WrapField> = alloc::vec::Vec::with_capacity(15);
+        for a in chals.0 .0.iter() {
+            let raw = ach_to_field::<WrapField>(&a.prechallenge)?;
+            chal_vec.push(ScalarChallenge::new(raw).to_field(&wrap_endo));
+        }
+        prev_challenges.push(RecursionChallenge {
+            chals: chal_vec,
+            comm: PolyComm { chunks: alloc::vec![sg] },
+        });
+    }
+
+    Ok(ProverProof {
+        commitments,
+        proof: opening,
+        evals,
+        ft_eval1,
+        prev_challenges,
+    })
 }
