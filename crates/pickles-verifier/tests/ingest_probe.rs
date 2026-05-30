@@ -1,13 +1,14 @@
-//! M2 probe: confirm that `mina_p2p_messages` can decode the bin_prot bytes
-//! the Mina daemon serves on the networks we care about (mesa MUT + mainnet).
+//! M2 probe + M3 structural checks for the bin_prot ingestion path.
 //!
-//! If a network's stable version diverges from the openmina pin we use, this
-//! is where we'd see it — and the failure mode (which field, which version
-//! tag) is what we record in SUMMARY.md.
+//! - M2: confirm `mina_p2p_messages` can decode the bin_prot bytes from each
+//!   target network (mesa MUT + mainnet).
+//! - M3: confirm structural invariants on the decoded statement (mpv, IPA
+//!   rounds, proofs-verified mask). Full `verify` path is gated on the wrap
+//!   kimchi `ProverProof` reconstruction (M3 follow-up).
 
 #![cfg(feature = "ingest-bin-prot")]
 
-use pickles_verifier::ingest::bin_prot::decode_bytes;
+use pickles_verifier::ingest::bin_prot::{decode_bytes, to_wrap_proof};
 use std::path::Path;
 
 fn fixture_dir(name: &str) -> std::path::PathBuf {
@@ -21,15 +22,10 @@ fn fixture_dir(name: &str) -> std::path::PathBuf {
 
 fn probe(network_dir: &str) {
     let dir = fixture_dir(network_dir);
-    let proof_path = dir.join("proof.bin_prot");
-    let bytes = std::fs::read(&proof_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", proof_path.display()));
+    let bytes = std::fs::read(dir.join("proof.bin_prot")).expect("read proof");
     println!("[{network_dir}] proof.bin_prot = {} bytes", bytes.len());
-    let parsed = decode_bytes(&bytes)
+    let _parsed = decode_bytes(&bytes)
         .unwrap_or_else(|e| panic!("bin_prot decode failed for {network_dir}: {e}"));
-    // Don't print the whole struct — it's enormous. The smoke test is that
-    // the parse succeeded and we can name a few inner fields without panic.
-    let _ = parsed;
     println!("[{network_dir}] decode_bytes: OK");
 }
 
@@ -41,4 +37,59 @@ fn decode_mesa_mut_tip() {
 #[test]
 fn decode_mainnet_tip() {
     probe("mainnet-tip");
+}
+
+/// Structural check on the decoded `MinaBaseProofStableV2` statement — mpv,
+/// IPA rounds, proofs-verified mask. The full `verify` path needs the wrap
+/// kimchi `ProverProof` reconstruction (an M3 follow-up that's still
+/// outstanding), so for now we assert that builder errors with the expected
+/// TODO message.
+fn structural_check(network_dir: &str, expected_mpv: usize) {
+    let dir = fixture_dir(network_dir);
+    let bytes = std::fs::read(dir.join("proof.bin_prot")).expect("read proof");
+    let parsed = decode_bytes(&bytes).expect("bin_prot decode");
+
+    // Confirm the wrap-proof builder is the still-open piece.
+    assert!(
+        to_wrap_proof(&parsed.0).is_err(),
+        "wrap-proof builder is the open M3 piece; should error until filled in"
+    );
+
+    let st = &parsed.0.statement;
+    let actual_mpv = st
+        .messages_for_next_step_proof
+        .challenge_polynomial_commitments
+        .len();
+    assert_eq!(
+        actual_mpv, expected_mpv,
+        "mpv = challenge_polynomial_commitments len"
+    );
+    assert_eq!(
+        st.proof_state.deferred_values.bulletproof_challenges.0.len(),
+        16,
+        "step IPA rounds = 16"
+    );
+
+    // Blockchain SNARK has proofs_verified = N2 -> mask [true, true].
+    let mask = match st.proof_state.deferred_values.branch_data.proofs_verified {
+        mina_p2p_messages::v2::PicklesBaseProofsVerifiedStableV1::N0 => [false, false],
+        mina_p2p_messages::v2::PicklesBaseProofsVerifiedStableV1::N1 => [false, true],
+        mina_p2p_messages::v2::PicklesBaseProofsVerifiedStableV1::N2 => [true, true],
+    };
+    println!(
+        "[{network_dir}] mpv={actual_mpv}, domain_log2={}, mask={:?}",
+        st.proof_state.deferred_values.branch_data.domain_log2.0 .0 as u8,
+        mask,
+    );
+    assert_eq!(mask, [true, true], "blockchain SNARK should have N2 mask");
+}
+
+#[test]
+fn structural_mainnet() {
+    structural_check("mainnet-tip", 2);
+}
+
+#[test]
+fn structural_mesa_mut() {
+    structural_check("mesa-mut-tip", 2);
 }

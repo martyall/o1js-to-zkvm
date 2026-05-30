@@ -42,7 +42,7 @@ const PADDED_LENGTH: usize = 2;
 
 /// Expand a raw 128-bit challenge (already a field element < 2^128) to its
 /// effective scalar via the curve endomorphism (Halo §6.2).
-fn expand<F: ark_ff::PrimeField>(raw: F, endo: &F) -> F {
+pub(crate) fn expand<F: ark_ff::PrimeField>(raw: F, endo: &F) -> F {
     ScalarChallenge::new(raw).to_field(endo)
 }
 

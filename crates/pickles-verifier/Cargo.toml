@@ -72,3 +72,8 @@ mina-p2p-messages = { git = "https://github.com/lambdaclass/openmina/", rev = "9
 # to whichever fork mina-p2p-messages used at build time.
 binprot = { git = "https://github.com/lambdaclass/openmina-binprot-rs", rev = "2b5a909", optional = true }
 base64 = { version = "0.22", optional = true }
+
+[dev-dependencies]
+# Integration tests reach into mina-p2p-messages types for structural
+# assertions; mirror the same pin used optionally above.
+mina-p2p-messages = { git = "https://github.com/lambdaclass/openmina/", rev = "97df7ca5e3b631c99c9fa23a9ff8c76b4120504c", features = ["hashing"] }
