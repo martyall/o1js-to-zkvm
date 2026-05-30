@@ -16,6 +16,16 @@ std = [
   "kimchi/parallel",
   "poly-commitment/parallel",
 ]
+# Ingest adapter for bin_prot-encoded pickles proofs as exposed by the Mina
+# daemon (protocolStateProof.base64) and o1js (Proof.toJSON()'s `proof` field
+# is base64 of the same bin_prot). Adds a chunky transitive dep (openmina's
+# mina-p2p-messages), so it's opt-in even when std is on.
+ingest-bin-prot = [
+  "std",
+  "dep:mina-p2p-messages",
+  "dep:binprot",
+  "dep:base64",
+]
 
 [dependencies]
 kimchi = { workspace = true }
@@ -46,3 +56,19 @@ o1-utils = { path = "../../mina/src/lib/crypto/proof-systems/utils", default-fea
 # std-only (fixture wire/parsing + host-side conversion)
 serde_json = { version = "1", optional = true }
 hex = { version = "0.4", optional = true }
+
+# std-only, opt-in (ingest-bin-prot feature). Same git rev Nori pins so the
+# bin_prot stable-version coverage matches what mainnet+devnet+mesa daemons
+# actually serve today.
+# NOTE: `default-features = false` would seem natural, but the v2 manual
+# bindings unconditionally call `BigInt::one()` / `::zero()`, which only exist
+# when the `hashing` feature is enabled (gated in bigint.rs). So `hashing` is
+# effectively mandatory at this rev. It brings in arkworks 0.3.0 transitively;
+# our verifier code uses arkworks 0.5, and the two coexist in the dep graph.
+# We never share field-type instances across the boundary — we move bytes.
+mina-p2p-messages = { git = "https://github.com/lambdaclass/openmina/", rev = "97df7ca5e3b631c99c9fa23a9ff8c76b4120504c", features = ["hashing"], optional = true }
+# Must be the same openmina-binprot-rs rev mina-p2p-messages depends on:
+# `BinProtRead` is a trait, and the impl on `MinaBaseProofStableV2` is keyed
+# to whichever fork mina-p2p-messages used at build time.
+binprot = { git = "https://github.com/lambdaclass/openmina-binprot-rs", rev = "2b5a909", optional = true }
+base64 = { version = "0.22", optional = true }
