@@ -17,3 +17,6 @@
 
 pub mod bin_prot;
 pub mod o1js;
+pub mod o1js_sexpr;
+pub mod o1js_vk;
+pub mod sexpr;
