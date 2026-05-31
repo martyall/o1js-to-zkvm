@@ -29,6 +29,9 @@ pub mod wire;
 #[cfg(feature = "std")]
 pub mod convert;
 
+#[cfg(feature = "ingest-bin-prot")]
+pub mod ingest;
+
 use alloc::vec::Vec;
 
 use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
