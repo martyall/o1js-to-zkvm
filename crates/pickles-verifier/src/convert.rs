@@ -91,7 +91,7 @@ fn wrap_vk_step_fields(vk: &WrapVerifierIndex) -> Result<Vec<StepField>, String>
 /// low 128 bits (LE) of `blake2s256("chal_i")`; the `Ro` monad draws them in
 /// counter order `1..=15` and stores them reversed (`Vector.init` evaluates
 /// right-to-left), so the result is indexed `[chal_15, …, chal_1]`.
-fn dummy_ipa_wrap_expanded(wrap_endo: &WrapField) -> [WrapField; WRAP_IPA_ROUNDS] {
+pub(crate) fn dummy_ipa_wrap_expanded(wrap_endo: &WrapField) -> [WrapField; WRAP_IPA_ROUNDS] {
     let mut v: Vec<WrapField> = (1..=WRAP_IPA_ROUNDS)
         .map(|i| {
             let digest = Blake2s256::digest(format!("chal_{i}").as_bytes());

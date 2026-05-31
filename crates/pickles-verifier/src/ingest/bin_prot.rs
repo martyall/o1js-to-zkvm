@@ -362,15 +362,29 @@ fn pair_to_point_eval(
 
 /// `Pickles.Dummy.Ipa.Wrap.sg` — the protocol-fixed dummy Pallas point used to
 /// front-pad the prev-step CPC list to `PADDED_LENGTH = 2`. Derived
-/// deterministically the same way OCaml does
-/// (`Pickles.Common.dummy_sg_from_seed` over the "wrap" tag), but for the
-/// blockchain SNARK case `mpv = 2` so this dummy is never consumed — we only
-/// need it on paths with `mpv < 2`. Returning the curve identity is a safe
-/// placeholder for the `mpv = 2` path that doesn't tickle it; the `mpv < 2`
-/// path will need the actual constant (TODO when o1js fixtures arrive).
-fn dummy_wrap_sg() -> Pallas {
-    use ark_ec::AffineRepr;
-    Pallas::zero()
+/// deterministically by OCaml as `Pickles.Ipa.Wrap.compute_sg(challenges)`
+/// where `challenges` are 15 raw `Ro.scalar_chal()` values (the same draw that
+/// produces `dummy_ipa_wrap_expanded` in `convert.rs`). Because Mina's wrap
+/// SRS is universal across mainnet, devnet, and o1js v2.15, this point is also
+/// universal — we extracted the 33-byte kimchi-compressed encoding from
+/// `fixtures/nrr/proof.serde.json::prev_challenges[0].comm.chunks[0]` (nrr is
+/// `mpv = 0`, so both `prev_challenges` entries are this dummy) and decode
+/// it lazily. Both `nrr` entries and `simplechain/wrap0`'s leading entry
+/// match this constant byte-for-byte (verified by `dummy_wrap_sg_matches_nrr`
+/// and `dummy_wrap_sg_matches_simplechain`).
+const DUMMY_WRAP_SG_COMPRESSED_HEX: &str =
+    "48b536e84654a55f4ffdfffdf591bd9d3ca1704bcef05ca59dc26448dedfd31100";
+
+pub(super) fn dummy_wrap_sg() -> Pallas {
+    use ark_serialize::CanonicalDeserialize;
+    use std::sync::OnceLock;
+    static CELL: OnceLock<Pallas> = OnceLock::new();
+    *CELL.get_or_init(|| {
+        let bytes = hex::decode(DUMMY_WRAP_SG_COMPRESSED_HEX)
+            .expect("DUMMY_WRAP_SG_COMPRESSED_HEX is valid hex");
+        Pallas::deserialize_compressed(&bytes[..])
+            .expect("DUMMY_WRAP_SG_COMPRESSED_HEX decodes to a Pallas affine")
+    })
 }
 
 /// Reconstruct the wrap kimchi `ProverProof<Pallas>` from the bin_prot wire
