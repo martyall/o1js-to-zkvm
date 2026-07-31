@@ -97,4 +97,4 @@ clear-nrr-fixtures: ## Remove the No_recursion_return fixture directory ($(NRR_F
 fetch-mainnet-fixture: ## Fetch a fresh mainnet blockchain-SNARK fixture (MINA_GRAPHQL_URI required) into $(MAINNET_FIXTURE_DIR)
 	@[ -n "$$MINA_GRAPHQL_URI" ] || (echo "error: set MINA_GRAPHQL_URI (e.g. https://api.minascan.io/node/mainnet/v1/graphql)" >&2; exit 1)
 	mkdir -p "$(MAINNET_FIXTURE_DIR)"
-	nix develop $(MINA_DEVSHELL) -c bash -c 'cd mina && MINA_GRAPHQL_URI="$$MINA_GRAPHQL_URI" dune exec src/app/fetch_blockchain_fixture/fetch_blockchain_fixture.exe -- "$(MAINNET_FIXTURE_DIR)"'
+	nix develop $(MINA_DEVSHELL) -c bash -c 'cd mina && MINA_GRAPHQL_URI="$$MINA_GRAPHQL_URI" dune exec src/app/fetch_blockchain_fixture/fetch_blockchain_fixture.exe -- -output-dir "$(MAINNET_FIXTURE_DIR)"'
